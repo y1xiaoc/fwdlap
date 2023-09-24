@@ -30,11 +30,9 @@ from jax.experimental.jet import jet_rules
 
 
 def lap(fun, primals, series):
-  try:
-    order, = set(map(len, series))
-  except ValueError:
+  if set(map(len, series)) != {2}:
     msg = "jet terms have inconsistent lengths for different arguments"
-    raise ValueError(msg) from None
+    raise ValueError(msg)
 
   # TODO(mattjj): consider supporting pytree inputs
   for i, (x, terms) in enumerate(zip(primals, series)):
@@ -52,16 +50,15 @@ def lap(fun, primals, series):
     yield tree_flatten(ans)
 
   f, out_tree = flatten_fun_output(lu.wrap_init(fun))
-  out_primals, out_terms = lap_fun(lap_subtrace(f), order).call_wrapped(primals, series)
+  out_primals, out_terms = lap_fun(lap_subtrace(f)).call_wrapped(primals, series)
   return tree_unflatten(out_tree(), out_primals), tree_unflatten(out_tree(), out_terms)
 
 @lu.transformation
-def lap_fun(order, primals, series):
+def lap_fun(primals, series):
   with core.new_main(LapTrace) as main:
-    main.order = order
     out_primals, out_terms = yield (main, primals, series), {}
     del main
-  out_terms = [[jnp.zeros_like(p)] * order if s is zero_series else s
+  out_terms = [[jnp.zeros_like(p)[None], jnp.zeros_like(p)] if s is zero_series else s
                for p, s in zip(out_primals, out_terms)]
   yield out_primals, out_terms
 
