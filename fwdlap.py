@@ -124,16 +124,18 @@ class LapTrace(core.Trace):
             rule = lap_rules[primitive]
             primal_out, jac_out, lap_out = rule(
                 primals_in, jacs_in, laps_in, **params)
+            terms_out = (szip(jac_out, lap_out) if primitive.multiple_results 
+                         else (jac_out, lap_out))
         elif primitive in jet_rules:
-            primal_out, jac_out, lap_out = primitive_by_jet(
+            print(primitive)
+            primal_out, terms_out = primitive_by_jet(
                 primitive, primals_in, jacs_in, laps_in, **params)
         else:
-            primal_out, jac_out, lap_out = primitive_by_jvp(
+            primal_out, terms_out = primitive_by_jvp(
                 primitive, primals_in, jacs_in, laps_in, **params)
         if not primitive.multiple_results:
-            return LapTracer(self, primal_out, (jac_out, lap_out))
+            return LapTracer(self, primal_out, terms_out)
         else:
-            terms_out = szip(jac_out, lap_out)
             return [LapTracer(self, p, ts) for p, ts in zip(primal_out, terms_out)]
 
     def process_call(self, call_primitive, f, tracers, params):
@@ -230,7 +232,8 @@ def hvv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None):
 def primitive_by_jvp(primitive, primals_in, jacs_in, laps_in, **params):
     func = partial(primitive.bind, **params)
     f_jvp = partial(jax.jvp, func)
-    return hvv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None)
+    o0, o1, o2 = hvv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None)
+    return o0, szip(o1, o2) if primitive.multiple_results else (o1, o2)
 
 
 def primitive_by_jet(primitive, primals_in, jacs_in, laps_in, **params):
@@ -240,16 +243,11 @@ def primitive_by_jet(primitive, primals_in, jacs_in, laps_in, **params):
     z2 = jax.tree_map(lambda a: a / n_coord, laps_in)
     def jet_call(p_in, j_in, l_in):
         s_in = list(map(list, zip(j_in, l_in)))
-        p_out, s_out = rule(p_in, s_in, **params)
-        if primitive.multiple_results:
-            s_out = smap(partial(align_output_terms, n_coord=n_coord), p_out, s_out)
-            j_out, l_out = unzip2(s_out)
-        else:
-            j_out, l_out = align_output_terms(p_out, s_out, n_coord=n_coord)
-        return p_out, j_out, l_out
-    o0, o1, o2 = jax.vmap(jet_call, (None, 0, None), (None, 0, 0))(z0, z1, z2)
-    o2 = jax.tree_map(lambda a: a.sum(0), o2)
-    return o0, o1, o2
+        return rule(p_in, s_in, **params)
+    o0, o12 = jax.vmap(jet_call, (None, 0, None), (None, 0))(z0, z1, z2)
+    sum_o2 = (lambda o12: (o12[0], o12[1].sum(0)) if o12 is not zero_series else o12)
+    o12 = smap(sum_o2, o12) if primitive.multiple_results else sum_o2(o12)
+    return o0, o12
 
 
 def recast_np_float0(primal, tangent):
