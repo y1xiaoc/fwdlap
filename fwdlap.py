@@ -238,7 +238,7 @@ def primitive_by_jet(primitive, primals_in, jacs_in, laps_in, **params):
     z0, z1 = primals_in, jacs_in
     z2 = jax.tree_map(lambda a: a / n_coord, laps_in)
     def jet_call(p_in, j_in, l_in):
-        s_in = szip(j_in, l_in)
+        s_in = list(map(list, zip(j_in, l_in)))
         p_out, s_out = rule(p_in, s_in, **params)
         j_out, l_out = unzip2(s_out) if primitive.multiple_results else s_out
         return p_out, j_out, l_out
