@@ -16,6 +16,7 @@ from typing import Any, Callable
 
 from functools import partial
 
+import math
 import numpy as np
 
 import jax
@@ -35,7 +36,7 @@ from jax.interpreters.ad import replace_float0s
 
 from jax.experimental import jet
 from jax.experimental.jet import jet_rules, zero_term, zero_series
-jet.fact = lambda n: jax.lax.prod(range(1, n + 1)) # modification from @YouJiacheng
+jet.fact = lambda n: math.prod(range(1, n + 1)) # modification from @YouJiacheng
 
 
 def lap(fun, primals, series):
@@ -126,10 +127,9 @@ class LapTrace(core.Trace):
                 primals_in, jacs_in, laps_in, **params)
             terms_out = (szip(jac_out, lap_out) if primitive.multiple_results 
                          else (jac_out, lap_out))
-        elif primitive in jet_rules:
-            print(primitive)
-            primal_out, terms_out = primitive_by_jet(
-                primitive, primals_in, jacs_in, laps_in, **params)
+        # elif primitive in jet_rules:
+        #     primal_out, terms_out = primitive_by_jet(
+        #         primitive, primals_in, jacs_in, laps_in, **params)
         else:
             primal_out, terms_out = primitive_by_jvp(
                 primitive, primals_in, jacs_in, laps_in, **params)
@@ -193,21 +193,11 @@ def align_input_series(primals_in, series_in):
     except ValueError:
         msg = "jacobians have inconsistent 1st dimension for different arguments"
         raise ValueError(msg) from None
-    jacs_in = [jnp.zeros((n_coord, *np.shape(x)), dtype=jnp.result_type(x))
-               if t is zero_term else t  for x, t in zip(primals_in, jacs_in)]
-    laps_in = [jnp.zeros(np.shape(x), dtype=jnp.result_type(x))
-               if t is zero_term else t  for x, t in zip(primals_in, laps_in)]
+    jacs_in = tuple(jnp.zeros((n_coord, *np.shape(x)), dtype=jnp.result_type(x))
+                    if t is zero_term else t for x, t in zip(primals_in, jacs_in))
+    laps_in = tuple(jnp.zeros(np.shape(x), dtype=jnp.result_type(x))
+                    if t is zero_term else t for x, t in zip(primals_in, laps_in))
     return jacs_in, laps_in
-
-
-def align_output_terms(primal_out, terms_out, n_coord):
-    if terms_out is not zero_series:
-        return terms_out
-    jac_out = jnp.zeros((n_coord, *np.shape(primal_out)),
-                        dtype=jnp.result_type(primal_out))
-    lap_out = jnp.zeros(np.shape(primal_out),
-                        dtype=jnp.result_type(primal_out))
-    return jac_out, lap_out
 
 
 def hvv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None):
