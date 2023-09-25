@@ -198,6 +198,16 @@ def align_input_series(primals_in, series_in):
     return jacs_in, laps_in
 
 
+def align_output_terms(primal_out, terms_out, n_coord):
+    if terms_out is not zero_series:
+        return terms_out
+    jac_out = jnp.zeros((n_coord, *np.shape(primal_out)),
+                        dtype=jnp.result_type(primal_out))
+    lap_out = jnp.zeros(np.shape(primal_out),
+                        dtype=jnp.result_type(primal_out))
+    return jac_out, lap_out
+
+
 def hvv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None):
     z0 = primals_in
     z1 = tree_map(recast_np_float0, primals_in, jacs_in)
@@ -231,7 +241,11 @@ def primitive_by_jet(primitive, primals_in, jacs_in, laps_in, **params):
     def jet_call(p_in, j_in, l_in):
         s_in = list(map(list, zip(j_in, l_in)))
         p_out, s_out = rule(p_in, s_in, **params)
-        j_out, l_out = unzip2(s_out) if primitive.multiple_results else s_out
+        if primitive.multiple_results:
+            s_out = smap(partial(align_output_terms, n_coord=n_coord), p_out, s_out)
+            j_out, l_out = unzip2(s_out)
+        else:
+            j_out, l_out = align_output_terms(p_out, s_out, n_coord=n_coord)
         return p_out, j_out, l_out
     o0, o1, o2 = jax.vmap(jet_call, (None, 0, None), (None, 0, 0))(z0, z1, z2)
     o2 = jax.tree_map(lambda a: a.sum(0), o2)
