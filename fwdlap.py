@@ -34,7 +34,7 @@ from jax.util import unzip2, split_list, safe_map as smap, safe_zip as szip
 from jax.interpreters.ad import replace_float0s
 
 from jax.experimental import jet
-from jax.experimental.jet import jet_rules
+from jax.experimental.jet import jet_rules, zero_term, zero_series
 jet.fact = lambda n: jax.lax.prod(range(1, n + 1)) # modification from @YouJiacheng
 
 
@@ -91,7 +91,7 @@ class LapTracer(core.Tracer):
     __slots__ = ["primal", "terms"]
 
     def __init__(self, trace, primal, terms):
-        assert type(terms) in (ZeroSeries, list, tuple)
+        assert type(terms) in (jet.ZeroSeries, list, tuple)
         self._trace = trace
         self.primal = primal
         self.terms = terms
@@ -177,15 +177,6 @@ class LapTrace(core.Trace):
     def process_custom_vjp_call(self, primitive, fun, fwd, bwd, tracers, out_trees):
         del primitive, fwd, bwd, out_trees  # Unused.
         return fun.call_wrapped(*tracers)
-
-
-class ZeroTerm: pass
-zero_term = ZeroTerm()
-register_pytree_node(ZeroTerm, lambda z: ((), None), lambda _, xs: zero_term)
-
-class ZeroSeries: pass
-zero_series = ZeroSeries()
-register_pytree_node(ZeroSeries, lambda z: ((), None), lambda _, xs: zero_series)
 
 
 call_param_updaters: dict[core.Primitive, Callable[..., Any]] = {}
