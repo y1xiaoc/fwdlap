@@ -25,17 +25,24 @@ from jax.tree_util import (tree_structure, treedef_is_leaf,
                            tree_flatten, tree_unflatten,)
 
 from jax import core
+from jax.dtypes import float0
 try:
     from jax.extend import linear_util as lu
 except ImportError:
     from jax import linear_util as lu
 from jax.util import split_list, safe_map as smap
-from jax.interpreters.ad import Zero
+from jax.interpreters.ad import Zero, instantiate_zeros
 
 from jax._src.util import unzip3
 
 
 def lap(fun, primals, jacobians, laplacians):
+    try:
+        jsize, = set(map(lambda x:x.shape[0], jacobians))
+    except ValueError:
+        msg = "jacobians have inconsistent first dimensions for different arguments"
+        raise ValueError(msg) from None
+
     for i, (x, j, l) in enumerate(zip(primals, jacobians, laplacians)):
         for t, name in ((x, "primal"), (j, "jacobian"), (l, "laplacian")):
             treedef = tree_structure(t)
@@ -48,18 +55,19 @@ def lap(fun, primals, jacobians, laplacians):
         yield tree_flatten(ans)
 
     f, out_tree = flatten_fun_output(lu.wrap_init(fun))
-    out_primals, out_jacs, out_laps = lap_fun(lap_subtrace(f)).call_wrapped(
+    out_primals, out_jacs, out_laps = lap_fun(lap_subtrace(f), jsize).call_wrapped(
         primals, jacobians, laplacians)
     return (tree_unflatten(out_tree(), out_primals),
             tree_unflatten(out_tree(), out_jacs),
             tree_unflatten(out_tree(), out_laps))
 
 @lu.transformation
-def lap_fun(primals, jacobians, laplacians):
+def lap_fun(jsize, primals, jacobians, laplacians):
     with core.new_main(LapTrace) as main:
+        main.jsize = jsize
         out_primals, out_jacs, out_laps = yield (main, primals, jacobians, laplacians), {}
         del main
-    out_jacs = [jnp.zeros_like(p)[None] if type(j) is Zero else j
+    out_jacs = [jnp.zeros((jsize, *p.shape), p.dtype) if type(j) is Zero else j
                 for p, j in zip(out_primals, out_jacs)]
     out_laps = [jnp.zeros_like(p) if type(l) is Zero else l
                 for p, l in zip(out_primals, out_laps)]
@@ -105,12 +113,18 @@ class LapTracer(core.Tracer):
 class LapTrace(core.Trace):
 
     def pure(self, val):
-        zero_jac = Zero(core.get_aval(jnp.expand_dims(val, 0)).at_least_vspace())
+        jsize = self.main.jsize
+        zero_jac = Zero(core.get_aval(
+                jnp.expand_dims(val, 0).repeat(jsize, axis=0)
+            ).at_least_vspace())
         zero_lap = Zero(core.get_aval(val).at_least_vspace())
         return LapTracer(self, val, zero_jac, zero_lap)
 
     def lift(self, val):
-        zero_jac = Zero(core.get_aval(jnp.expand_dims(val, 0)).at_least_vspace())
+        jsize = self.main.jsize
+        zero_jac = Zero(core.get_aval(
+                jnp.expand_dims(val, 0).repeat(jsize, axis=0)
+            ).at_least_vspace())
         zero_lap = Zero(core.get_aval(val).at_least_vspace())
         return LapTracer(self, val, zero_jac, zero_lap)
 
@@ -183,18 +197,24 @@ call_param_updaters: dict[core.Primitive, Callable[..., Any]] = {}
 
 
 def hvv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None):
-    z0, z1, z2 = primals_in, jacs_in, laps_in
+    print("HHHHHHHHHHHHHEEEEEEEEEELLLLLLLLLLLLLLLLLLLLLLOOOOOOOOOOOO")
+    print(jacs_in)
+    z0 = primals_in # make it a list
+    z1 = jax.tree_map(recast_np_float0, primals_in, jacs_in)
+    z2 = jax.tree_map(recast_np_float0, primals_in, laps_in)
     if inner_jvp is None:
         inner_jvp = f_jvp
     def hvv(v):
         inner = lambda *a: inner_jvp(a, v)
         (_, o1), (_, o2_1) = jax.jvp(inner, z0, v)
         return o1, o2_1
+    print(z1)
     o1, o2_1 = jax.vmap(hvv, in_axes=0, out_axes=0)(z1)
     o0, o2_2 = f_jvp(z0, z2)
     add_o2 = lambda a, b: (b if type(a) is Zero else a.sum(0)
                            if type(b) is Zero else a.sum(0) + b)
     o2 = jax.tree_map(add_o2, o2_1, o2_2)
+    print(o0, o1, o2, '\n', sep='\n')
     return o0, o1, o2
 
 
@@ -203,6 +223,13 @@ def primitive_by_jvp(primitive, primals_in, jacs_in, laps_in, **params):
     f_jvp = partial(jax.jvp, func)
     return hvv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None)
 
+
+def recast_np_float0(primal, tangent):
+    tangent = instantiate_zeros(tangent)
+    if core.primal_dtype_to_tangent_dtype(jnp.result_type(primal)) == float0:
+        return np.zeros(tangent.shape, dtype=float0)
+    else:
+        return tangent
 
 ### rule definitions
 
