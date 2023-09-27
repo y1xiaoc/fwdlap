@@ -16,30 +16,23 @@ from typing import Any, Callable
 
 from functools import partial
 
-import math
 import numpy as np
 
 import jax
 from jax import lax
 import jax.numpy as jnp
-from jax.tree_util import (register_pytree_node, tree_structure, tree_map,
-                           treedef_is_leaf, tree_flatten, tree_unflatten,)
+from jax.tree_util import (tree_structure, treedef_is_leaf,
+                           tree_flatten, tree_unflatten,)
 
 from jax import core
-from jax.dtypes import float0
 try:
     from jax.extend import linear_util as lu
 except ImportError:
     from jax import linear_util as lu
-from jax.util import unzip2, split_list, safe_map as smap, safe_zip as szip
-from jax.interpreters.ad import replace_float0s
+from jax.util import split_list, safe_map as smap
 from jax.interpreters.ad import Zero
 
 from jax._src.util import unzip3
-
-from jax.experimental import jet
-from jax.experimental.jet import jet_rules, zero_term, zero_series
-jet.fact = lambda n: math.prod(range(1, n + 1)) # modification from @YouJiacheng
 
 
 def lap(fun, primals, jacobians, laplacians):
@@ -209,13 +202,6 @@ def primitive_by_jvp(primitive, primals_in, jacs_in, laps_in, **params):
     func = partial(primitive.bind, **params)
     f_jvp = partial(jax.jvp, func)
     return hvv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None)
-
-
-def recast_np_float0(primal, tangent):
-    if core.primal_dtype_to_tangent_dtype(jnp.result_type(primal)) == float0:
-        return np.zeros(tangent.shape, dtype=float0)
-    else:
-        return tangent
 
 
 ### rule definitions
