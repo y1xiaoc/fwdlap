@@ -197,9 +197,7 @@ call_param_updaters: dict[core.Primitive, Callable[..., Any]] = {}
 
 
 def hvv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None):
-    print("HHHHHHHHHHHHHEEEEEEEEEELLLLLLLLLLLLLLLLLLLLLLOOOOOOOOOOOO")
-    print(jacs_in)
-    z0 = primals_in # make it a list
+    z0 = primals_in
     z1 = jax.tree_map(recast_np_float0, primals_in, jacs_in)
     z2 = jax.tree_map(recast_np_float0, primals_in, laps_in)
     if inner_jvp is None:
@@ -208,13 +206,11 @@ def hvv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None):
         inner = lambda *a: inner_jvp(a, v)
         (_, o1), (_, o2_1) = jax.jvp(inner, z0, v)
         return o1, o2_1
-    print(z1)
     o1, o2_1 = jax.vmap(hvv, in_axes=0, out_axes=0)(z1)
     o0, o2_2 = f_jvp(z0, z2)
     add_o2 = lambda a, b: (b if type(a) is Zero else a.sum(0)
                            if type(b) is Zero else a.sum(0) + b)
     o2 = jax.tree_map(add_o2, o2_1, o2_2)
-    print(o0, o1, o2, '\n', sep='\n')
     return o0, o1, o2
 
 
