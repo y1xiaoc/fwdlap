@@ -31,6 +31,7 @@ try:
 except ImportError:
     from jax import linear_util as lu
 from jax.util import split_list, safe_map as smap
+from jax.interpreters import ad
 from jax.interpreters.ad import Zero, instantiate_zeros
 
 from jax._src.util import unzip3
@@ -48,11 +49,6 @@ def lap(fun, primals, jacobians, laplacians):
             treedef = tree_structure(t)
             if not treedef_is_leaf(treedef):
                 raise ValueError(f"{name} value at position {i} is not an array")
-
-    @lu.transformation_with_aux
-    def flatten_fun_output(*args):
-        ans = yield args, {}
-        yield tree_flatten(ans)
 
     f, out_tree = flatten_fun_output(lu.wrap_init(fun))
     out_primals, out_jacs, out_laps = lap_fun(lap_subtrace(f), jsize).call_wrapped(
@@ -196,6 +192,16 @@ class LapTrace(core.Trace):
 call_param_updaters: dict[core.Primitive, Callable[..., Any]] = {}
 
 
+def my_jvp(fun, primals, tangents):
+    # this jvp is transparant to Zero, and assumes flattened input
+    f, out_tree = flatten_fun_output(lu.wrap_init(fun))
+    jvp_f = ad.jvp(f, instantiate=False)
+    out_primals, out_tangents = jvp_f.call_wrapped(primals, tangents)
+    out_tree = out_tree()
+    return (tree_unflatten(out_tree, out_primals),
+            tree_unflatten(out_tree, out_tangents))
+
+
 def hvv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None):
     z0 = primals_in
     z1 = jax.tree_map(recast_np_float0, primals_in, jacs_in)
@@ -226,6 +232,13 @@ def recast_np_float0(primal, tangent):
         return np.zeros(tangent.shape, dtype=float0)
     else:
         return tangent
+
+
+@lu.transformation_with_aux
+def flatten_fun_output(*args):
+    ans = yield args, {}
+    yield tree_flatten(ans)
+
 
 ### rule definitions
 
