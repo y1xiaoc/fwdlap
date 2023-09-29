@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Callable
+from typing import Any, Callable, Sequence, Union
 
 from functools import partial
 
@@ -31,7 +31,10 @@ except ImportError:
     from jax import linear_util as lu
 from jax.util import split_list, safe_map as smap
 from jax.interpreters import ad
+from jax.interpreters import partial_eval as pe
 from jax.interpreters.ad import Zero
+
+from jax._src.util import unzip3, weakref_lru_cache
 
 
 def lap(fun, primals, jacobians, laplacians):
@@ -48,7 +51,8 @@ def lap(fun, primals, jacobians, laplacians):
                 raise ValueError(f"{name} value at position {i} is not an array")
 
     f, out_tree = flatten_fun_output(lu.wrap_init(fun))
-    out_primals, out_jacs, out_laps = lap_fun(lap_subtrace(f), jsize).call_wrapped(
+    out_primals, out_jacs, out_laps = lap_fun(
+        lap_subtrace(f), jsize, True).call_wrapped(
         primals, jacobians, laplacians)
     return (tree_unflatten(out_tree(), out_primals),
             tree_unflatten(out_tree(), out_jacs),
@@ -56,15 +60,19 @@ def lap(fun, primals, jacobians, laplacians):
 
 
 @lu.transformation
-def lap_fun(jsize, primals, jacobians, laplacians):
+def lap_fun(jsize, instantiate, primals, jacobians, laplacians):
     with core.new_main(LapTrace) as main:
         main.jsize = jsize
         out_primals, out_jacs, out_laps = yield (main, primals, jacobians, laplacians), {}
         del main
-    out_jacs = [jnp.zeros((jsize, *p.shape), p.dtype) if type(j) is Zero else j
-                for p, j in zip(out_primals, out_jacs)]
-    out_laps = [jnp.zeros_like(p) if type(l) is Zero else l
-                for p, l in zip(out_primals, out_laps)]
+    if type(instantiate) is bool: # noqa: E721
+        instantiate = [instantiate] * len(out_jacs)
+    out_jacs = [jnp.zeros((jsize, *p.shape), p.dtype)
+                if type(j) is Zero and inst else j
+                for p, j, inst in zip(out_primals, out_jacs, instantiate)]
+    out_laps = [jnp.zeros_like(p)
+                if type(l) is Zero and inst else l
+                for p, l, inst in zip(out_primals, out_laps, instantiate)]
     yield out_primals, out_jacs, out_laps
 
 
@@ -240,17 +248,6 @@ def flatten_fun_output(*args):
     yield tree_flatten(ans)
 
 
-def unzip3(xyzs) :
-  """Unzip sequence of length-3 tuples into three tuples."""
-  # copied from jax._src.util, remove type annotations
-  xs, ys, zs = [], [], []
-  for x, y, z in xyzs:
-    xs.append(x)
-    ys.append(y)
-    zs.append(z)
-  return tuple(xs), tuple(ys), tuple(zs)
-
-
 ### rule definitions
 
 lap_rules = {}
@@ -352,3 +349,46 @@ def elemwise_prop(prim, primals_in, jacs_in, laps_in, **params):
 
 defelemwise(lax.sin_p)
 defelemwise(lax.cos_p)
+
+
+def lap_jaxpr(jaxpr: core.ClosedJaxpr,
+              jsize: int,
+              nonzeros1: Sequence[bool],
+              nonzeros2: Sequence[bool],
+              instantiate: Union[bool, Sequence[bool]]
+              ) -> tuple[core.ClosedJaxpr, list[bool]]:
+    if type(instantiate) is bool: # noqa: E721
+        instantiate = (instantiate,) * len(jaxpr.out_avals)
+    return _lap_jaxpr(jaxpr, jsize,
+                      tuple(nonzeros1), tuple(nonzeros2), tuple(instantiate))
+
+@weakref_lru_cache
+def _lap_jaxpr(jaxpr, jsize, nonzeros1, nonzeros2, instantiate):
+    assert len(jaxpr.in_avals) == len(nonzeros1) == len(nonzeros2)
+    f = lu.wrap_init(core.jaxpr_as_fun(jaxpr))
+    f_jvp, out_nonzeros = f_lap_traceable(lap_fun(lap_subtrace(f), jsize, instantiate),
+                                          nonzeros1, nonzeros2)
+    jac_avals = [aval.update(shape=(jsize, *aval.shape))
+                 for aval, nz in zip(jaxpr.in_avals, nonzeros2) if nz]
+    lap_avals = [aval for aval, nz in zip(jaxpr.in_avals, nonzeros2) if nz]
+    avals_in = [*jaxpr.in_avals, *jac_avals, *lap_avals]
+    jaxpr_out, avals_out, literals_out = pe.trace_to_jaxpr_dynamic(f_jvp, avals_in)
+    return core.ClosedJaxpr(jaxpr_out, literals_out), out_nonzeros()
+
+@lu.transformation_with_aux
+def f_lap_traceable(nonzeros1, nonzeros2, *primals_nzjacs_nzlaps):
+    assert len(nonzeros1) == len(nonzeros2)
+    num_primals = len(nonzeros1)
+    primals = list(primals_nzjacs_nzlaps[:num_primals])
+    nzjacs_nzlaps = iter(primals_nzjacs_nzlaps[num_primals:])
+    jacs = [next(nzjacs_nzlaps) if nz else Zero.from_value(p)
+            for p, nz in zip(primals, nonzeros1)]
+    laps = [next(nzjacs_nzlaps) if nz else Zero.from_value(p)
+            for p, nz in zip(primals, nonzeros2)]
+    primals_out, jacs_out, laps_out = yield (primals, jacs, laps), {}
+    out_nonzeros1 = [type(t) is not Zero for t in jacs_out]
+    out_nonzeros2 = [type(t) is not Zero for t in laps_out]
+    nonzero_jacs_out = [t for t in jacs_out if type(t) is not Zero]
+    nonzero_laps_out = [t for t in laps_out if type(t) is not Zero]
+    yield (list(primals_out) + nonzero_jacs_out + nonzero_laps_out,
+           (out_nonzeros1, out_nonzeros2))
