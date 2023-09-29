@@ -25,7 +25,6 @@ from jax.tree_util import (tree_structure, treedef_is_leaf,
                            tree_flatten, tree_unflatten,)
 
 from jax import core
-from jax.dtypes import float0
 try:
     from jax.extend import linear_util as lu
 except ImportError:
@@ -33,8 +32,6 @@ except ImportError:
 from jax.util import split_list, safe_map as smap
 from jax.interpreters import ad
 from jax.interpreters.ad import Zero
-
-from jax._src.util import unzip3
 
 
 def lap(fun, primals, jacobians, laplacians):
@@ -57,6 +54,7 @@ def lap(fun, primals, jacobians, laplacians):
             tree_unflatten(out_tree(), out_jacs),
             tree_unflatten(out_tree(), out_laps))
 
+
 @lu.transformation
 def lap_fun(jsize, primals, jacobians, laplacians):
     with core.new_main(LapTrace) as main:
@@ -69,6 +67,7 @@ def lap_fun(jsize, primals, jacobians, laplacians):
                 for p, l in zip(out_primals, out_laps)]
     yield out_primals, out_jacs, out_laps
 
+
 @lu.transformation
 def lap_subtrace(main, primals, jacobians, laplacians):
     trace = LapTrace(main, core.cur_sublevel())
@@ -78,6 +77,7 @@ def lap_subtrace(main, primals, jacobians, laplacians):
     out_primals, out_jacs, out_laps = unzip3((t.primal, t.jacobian, t.laplacian)
                                              for t in out_tracers)
     yield out_primals, out_jacs, out_laps
+
 
 @lu.transformation_with_aux
 def traceable(in_tree_def, *primals_jacs_laps):
@@ -105,6 +105,7 @@ class LapTracer(core.Tracer):
             return core.full_lower(self.primal)
         else:
             return self
+
 
 class LapTrace(core.Trace):
 
@@ -206,8 +207,6 @@ def my_jvp(fun, primals, tangents):
 
 def vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None):
     z0, z1, z2 = primals_in, jacs_in, laps_in
-    # print(z0,z1,z2,"^ input ^, v output v", sep="\n")
-    jsize, = set(map(lambda x: (x.aval if type(x) is Zero else x).shape[0], z1))
     if inner_jvp is None:
         inner_jvp = f_jvp
     def hvv(v):
@@ -219,23 +218,17 @@ def vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None):
     multi_out = not treedef_is_leaf(tree_structure(o0))
     # jacobian and first term in laplacian, handle all empty case
     if all(type(j) is Zero for j in z1):
-        o1 = [Zero(core.get_aval(p).at_least_vspace().update(
-                   shape=(jsize, *p.shape))) for p in o0]
+        o1 = [Zero(core.get_aval(p).at_least_vspace()) for p in o0]
         o2 = o2_2
     else:
         o1, o2_1 = jax.vmap(hvv, in_axes=0, out_axes=0)(z1)
         add_o2 = lambda a, b: (b if type(a) is Zero else a.sum(0)
                             if type(b) is Zero else a.sum(0) + b)
         o2 = smap(add_o2, o2_1, o2_2) if multi_out else add_o2(o2_1, o2_2)
-    # align the shape of Zero from vmap
-    # print(o0,o1,o2,"\n", sep="\n")
-    o1 = (smap(partial(check_zero_shape, jsize=jsize), o0, o1)
-          if multi_out else check_zero_shape(o0, o1, jsize=jsize))
     return o0, o1, o2
 
 
 def primitive_by_jvp(primitive, primals_in, jacs_in, laps_in, **params):
-    # print(primitive)
     func = partial(primitive.bind, **params)
     f_jvp = partial(my_jvp, func)
     return vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None)
@@ -247,15 +240,15 @@ def flatten_fun_output(*args):
     yield tree_flatten(ans)
 
 
-def check_zero_shape(primal, tangent, jsize=None):
-    pshape = primal.shape # primals cannot be zero
-    tshape = pshape if not jsize else (jsize, *pshape)
-    if type(tangent) is Zero:
-        if not tangent.aval.shape:
-            tangent = Zero(tangent.aval.update(shape=tshape))
-    else:
-        assert tangent.shape == tshape
-    return tangent
+def unzip3(xyzs) :
+  """Unzip sequence of length-3 tuples into three tuples."""
+  # copied from jax._src.util, remove type annotations
+  xs, ys, zs = [], [], []
+  for x, y, z in xyzs:
+    xs.append(x)
+    ys.append(y)
+    zs.append(z)
+  return tuple(xs), tuple(ys), tuple(zs)
 
 
 ### rule definitions
