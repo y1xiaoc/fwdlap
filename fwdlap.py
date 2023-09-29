@@ -110,13 +110,13 @@ class LapTracer(core.Tracer):
 class LapTrace(core.Trace):
 
     def pure(self, val):
-        zero_jac = zero_from_primal(val)
-        zero_lap = zero_from_primal(val)
+        zero_jac = zero_tangent_from_primal(val)
+        zero_lap = zero_tangent_from_primal(val)
         return LapTracer(self, val, zero_jac, zero_lap)
 
     def lift(self, val):
-        zero_jac = zero_from_primal(val)
-        zero_lap = zero_from_primal(val)
+        zero_jac = zero_tangent_from_primal(val)
+        zero_lap = zero_tangent_from_primal(val)
         return LapTracer(self, val, zero_jac, zero_lap)
 
     def sublift(self, val):
@@ -214,7 +214,7 @@ def vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None):
     multi_out = not treedef_is_leaf(tree_structure(o0))
     # jacobian and first term in laplacian, handle all empty case
     if all(type(j) is Zero for j in z1):
-        o1 = [zero_from_primal(p) for p in o0]
+        o1 = [zero_tangent_from_primal(p) for p in o0]
         o2 = o2_2
     else:
         o1, o2_1 = jax.vmap(hvv, in_axes=0, out_axes=0)(z1)
@@ -230,7 +230,7 @@ def primitive_by_jvp(primitive, primals_in, jacs_in, laps_in, **params):
     return vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None)
 
 
-def zero_from_primal(primal):
+def zero_tangent_from_primal(primal):
     return Zero(core.get_aval(primal).at_least_vspace())
 
 
@@ -261,8 +261,8 @@ def defzero(prim):
 
 def zero_prop(prim, primals_in, jacs_in, laps_in, **params):
     primal_out = prim.bind(*primals_in, **params)
-    jac_out = zero_from_primal(primal_out)
-    lap_out = zero_from_primal(primal_out)
+    jac_out = zero_tangent_from_primal(primal_out)
+    lap_out = zero_tangent_from_primal(primal_out)
     return primal_out, jac_out, lap_out
 
 defzero(lax.le_p)
@@ -294,7 +294,7 @@ def linear_prop(prim, primals_in, jacs_in, laps_in, **params):
     pprim = partial(prim.bind, **params)
     primal_out, lap_out = my_jvp(pprim, primals_in, laps_in)
     if all(type(j) is Zero for j in jacs_in):
-        jac_out = zero_from_primal(primal_out)
+        jac_out = zero_tangent_from_primal(primal_out)
     else:
         wrapped = lambda t: pprim(*smap(ad.instantiate_zeros, t))
         jac_out = jax.vmap(wrapped, 0, 0)(jacs_in)
@@ -321,3 +321,34 @@ deflinear(lax.reduce_sum_p)
 deflinear(lax.reduce_window_sum_p)
 deflinear(lax.fft_p)
 deflinear(lax.device_put_p)
+
+
+def defelemwise(prim):
+    lap_rules[prim] = partial(elemwise_prop, prim)
+
+def elemwise_prop(prim, primals_in, jacs_in, laps_in, **params):
+    print(prim)
+    pprim = partial(prim.bind, **params)
+    z0, z1, z2 = primals_in, jacs_in, laps_in
+    o0, o2_2 = my_jvp(pprim, z0, z2)
+    if all(type(j) is Zero for j in jacs_in):
+        o1 = zero_tangent_from_primal(o0)
+        return o0, o1, o2_2
+    # now jacs are not all zero
+    o1 = jax.vmap(lambda z: my_jvp(pprim, z0, z)[1], 0, 0)(z1)
+    nonzero_idx = [i for i, jac in enumerate(z1) if type(jac) is not Zero]
+    hess_fn = jax.hessian(pprim, argnums=nonzero_idx)
+    for _ in range(o0.ndim):
+        hess_fn = jax.vmap(hess_fn)
+    hess_mat = hess_fn(*z0)
+    o2 = o2_2
+    for i, nzi in enumerate(nonzero_idx):
+        for j, nzj in enumerate(nonzero_idx[i:]):
+            hess = hess_mat[i][j]
+            if i != j:
+                hess *= 2
+            o2 += (hess * z1[nzi] * z1[nzj]).sum(0)
+    return o0, o1, o2
+
+defelemwise(lax.sin_p)
+defelemwise(lax.cos_p)
