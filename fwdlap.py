@@ -223,7 +223,7 @@ def vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None):
     multi_out = not treedef_is_leaf(tree_structure(o0))
     # jacobian and first term in laplacian, handle all empty case
     if all(type(j) is Zero for j in z1):
-        o1 = ([zero_tangent_from_primal(p) for p in o0] 
+        o1 = ([zero_tangent_from_primal(p) for p in o0]
               if multi_out else zero_tangent_from_primal(o0))
         o2 = o2_2
     else:
@@ -253,73 +253,6 @@ def flatten_fun_output(*args):
 ### rule definitions
 
 lap_rules = {}
-
-
-def defzero(prim):
-    lap_rules[prim] = partial(zero_prop, prim)
-
-def zero_prop(prim, primals_in, jacs_in, laps_in, **params):
-    primal_out = prim.bind(*primals_in, **params)
-    jac_out = zero_tangent_from_primal(primal_out)
-    lap_out = zero_tangent_from_primal(primal_out)
-    return primal_out, jac_out, lap_out
-
-defzero(lax.le_p)
-defzero(lax.lt_p)
-defzero(lax.gt_p)
-defzero(lax.ge_p)
-defzero(lax.eq_p)
-defzero(lax.ne_p)
-defzero(lax.not_p)
-defzero(lax.and_p)
-defzero(lax.or_p)
-defzero(lax.xor_p)
-defzero(lax.floor_p)
-defzero(lax.ceil_p)
-defzero(lax.round_p)
-defzero(lax.sign_p)
-defzero(lax.stop_gradient_p)
-defzero(lax.is_finite_p)
-defzero(lax.shift_left_p)
-defzero(lax.shift_right_arithmetic_p)
-defzero(lax.shift_right_logical_p)
-defzero(lax.bitcast_convert_type_p)
-
-
-def deflinear(prim):
-    lap_rules[prim] = partial(linear_prop, prim)
-
-def linear_prop(prim, primals_in, jacs_in, laps_in, **params):
-    pprim = partial(prim.bind, **params)
-    primal_out, lap_out = my_jvp(pprim, primals_in, laps_in)
-    if all(type(j) is Zero for j in jacs_in):
-        jac_out = zero_tangent_from_primal(primal_out)
-    else:
-        wrapped = lambda t: pprim(*smap(ad.instantiate_zeros, t))
-        jac_out = jax.vmap(wrapped, 0, 0)(jacs_in)
-    return primal_out, jac_out, lap_out
-
-deflinear(lax.neg_p)
-deflinear(lax.real_p)
-deflinear(lax.complex_p)
-deflinear(lax.conj_p)
-deflinear(lax.imag_p)
-deflinear(lax.add_p)
-deflinear(ad.add_jaxvals_p)
-deflinear(lax.sub_p)
-deflinear(lax.convert_element_type_p)
-deflinear(lax.broadcast_in_dim_p)
-deflinear(lax.concatenate_p)
-deflinear(lax.pad_p)
-deflinear(lax.reshape_p)
-deflinear(lax.squeeze_p)
-deflinear(lax.rev_p)
-deflinear(lax.transpose_p)
-deflinear(lax.slice_p)
-deflinear(lax.reduce_sum_p)
-deflinear(lax.reduce_window_sum_p)
-deflinear(lax.fft_p)
-deflinear(lax.device_put_p)
 
 
 def defelemwise(prim):
