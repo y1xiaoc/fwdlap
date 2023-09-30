@@ -35,6 +35,7 @@ from jax.interpreters import partial_eval as pe
 from jax.interpreters.ad import Zero
 
 from jax._src.util import unzip3, weakref_lru_cache
+from jax.experimental.pjit import pjit_p
 
 
 def lap(fun, primals, jacobians, laplacians):
@@ -222,7 +223,8 @@ def vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None):
     multi_out = not treedef_is_leaf(tree_structure(o0))
     # jacobian and first term in laplacian, handle all empty case
     if all(type(j) is Zero for j in z1):
-        o1 = [zero_tangent_from_primal(p) for p in o0]
+        o1 = ([zero_tangent_from_primal(p) for p in o0] 
+              if multi_out else zero_tangent_from_primal(o0))
         o2 = o2_2
     else:
         o1, o2_1 = jax.vmap(hvv, in_axes=0, out_axes=0)(z1)
@@ -324,7 +326,6 @@ def defelemwise(prim):
     lap_rules[prim] = partial(elemwise_prop, prim)
 
 def elemwise_prop(prim, primals_in, jacs_in, laps_in, **params):
-    print(prim)
     pprim = partial(prim.bind, **params)
     z0, z1, z2 = primals_in, jacs_in, laps_in
     o0, o2_2 = my_jvp(pprim, z0, z2)
@@ -349,6 +350,7 @@ def elemwise_prop(prim, primals_in, jacs_in, laps_in, **params):
 
 defelemwise(lax.sin_p)
 defelemwise(lax.cos_p)
+defelemwise(lax.tanh_p)
 
 
 def lap_jaxpr(jaxpr: core.ClosedJaxpr,
@@ -392,3 +394,43 @@ def f_lap_traceable(nonzeros1, nonzeros2, *primals_nzjacs_nzlaps):
     nonzero_laps_out = [t for t in laps_out if type(t) is not Zero]
     yield (list(primals_out) + nonzero_jacs_out + nonzero_laps_out,
            (out_nonzeros1, out_nonzeros2))
+
+
+def _pjit_lap_rule(primals_in, jacs_in, laps_in,
+              jaxpr, in_shardings, out_shardings,
+              resource_env, donated_invars, name, keep_unused, inline):
+    jsize, = set(map(lambda x: x.shape[0], tree_flatten(jacs_in)[0]))
+    is_nz_jacs_in = [type(t) is not Zero for t in jacs_in]
+    is_nz_laps_in = [type(t) is not Zero for t in laps_in]
+    jaxpr_lap, (is_nz_jacs_out, is_nz_laps_out) = lap_jaxpr(
+        jaxpr, jsize, is_nz_jacs_in, is_nz_laps_in, instantiate=False)
+
+    def _filter_zeros(is_nz_l, l):
+        return (x for nz, x in zip(is_nz_l, l) if nz)
+    _fz_jacs_in = partial(_filter_zeros, is_nz_jacs_in)
+    _fz_laps_in = partial(_filter_zeros, is_nz_laps_in)
+    _fz_jacs_out = partial(_filter_zeros, is_nz_jacs_out)
+    _fz_laps_out = partial(_filter_zeros, is_nz_laps_out)
+
+    insd, outsd, dovar = in_shardings, out_shardings, donated_invars
+    outputs = pjit_p.bind(
+        *primals_in, *_fz_jacs_in(jacs_in), *_fz_laps_in(laps_in),
+        jaxpr=jaxpr_lap,
+        in_shardings=(*insd, *_fz_jacs_in(insd), *_fz_laps_in(insd)),
+        out_shardings=(*outsd, *_fz_jacs_out(outsd), *_fz_laps_out(outsd)),
+        resource_env=resource_env,
+        donated_invars=(*dovar, *_fz_jacs_in(dovar), *_fz_laps_in(dovar)),
+        name=name,
+        keep_unused=keep_unused,
+        inline=inline)
+
+    primals_out, nzjacs_nzlaps = split_list(outputs, [len(jaxpr.jaxpr.outvars)])
+    assert len(primals_out) == len(jaxpr.jaxpr.outvars)
+    nzjacs_nzlaps_it = iter(nzjacs_nzlaps)
+    jacs_out = [next(nzjacs_nzlaps_it) if nz else Zero(aval)
+                for nz, aval in zip(is_nz_jacs_out, jaxpr.out_avals)]
+    laps_out = [next(nzjacs_nzlaps_it) if nz else Zero(aval)
+                for nz, aval in zip(is_nz_laps_out, jaxpr.out_avals)]
+    return primals_out, jacs_out, laps_out
+
+lap_rules[pjit_p] = _pjit_lap_rule
