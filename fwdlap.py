@@ -215,9 +215,8 @@ def vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None):
     if inner_jvp is None:
         inner_jvp = f_jvp
     def hvv(v):
-        inner = lambda *a: inner_jvp(a, v)
-        (_, o1), (_, o2_1) = my_jvp(inner, z0, v)
-        return o1, o2_1
+        inner = lambda *a: inner_jvp(a, v)[1]
+        return my_jvp(inner, z0, v)
     # second term in laplacian
     o0, o2_2 = f_jvp(z0, z2)
     multi_out = not treedef_is_leaf(tree_structure(o0))
