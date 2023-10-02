@@ -255,37 +255,6 @@ def primitive_by_jvp(primitive, primals_in, jacs_in, laps_in, **params):
 lap_rules = {}
 
 
-def defelemwise(prim):
-    lap_rules[prim] = partial(elemwise_prop, prim)
-
-def elemwise_prop(prim, primals_in, jacs_in, laps_in, **params):
-    pprim = partial(prim.bind, **params)
-    z0, z1, z2 = primals_in, jacs_in, laps_in
-    o0, o2_2 = my_jvp(pprim, z0, z2)
-    if all(type(j) is Zero for j in jacs_in):
-        o1 = zero_tangent_from_primal(o0)
-        return o0, o1, o2_2
-    # now jacs are not all zero
-    o1 = jax.vmap(lambda z: my_jvp(pprim, z0, z)[1], 0, 0)(z1)
-    nonzero_idx = [i for i, jac in enumerate(z1) if type(jac) is not Zero]
-    hess_fn = jax.hessian(pprim, argnums=nonzero_idx)
-    for _ in range(o0.ndim):
-        hess_fn = jax.vmap(hess_fn)
-    hess_mat = hess_fn(*z0)
-    o2 = o2_2
-    for i, nzi in enumerate(nonzero_idx):
-        for j, nzj in enumerate(nonzero_idx[i:]):
-            hess = hess_mat[i][j]
-            if i != j:
-                hess *= 2
-            o2 += (hess * z1[nzi] * z1[nzj]).sum(0)
-    return o0, o1, o2
-
-defelemwise(lax.sin_p)
-defelemwise(lax.cos_p)
-defelemwise(lax.tanh_p)
-
-
 def lap_jaxpr(jaxpr: core.ClosedJaxpr,
               jsize: int,
               nonzeros1: Sequence[bool],
