@@ -177,18 +177,9 @@ class LapTrace(core.Trace):
         primals_in, jacs_in, laps_in = unzip3((t.primal, t.jacobian, t.laplacian)
                                               for t in tracers)
         primals_in = smap(core.full_lower, primals_in)
-        def wrap_jvp(jvp):
-            def wrapped(p_in, t_in):
-                t_in = smap(ad.instantiate_zeros, t_in)
-                t_in = smap(ad.replace_float0s, p_in, t_in)
-                outs = jvp(*p_in, *t_in)
-                p_out, t_out = split_list(outs, [len(outs) // 2])
-                t_out = smap(ad.recast_to_float0, p_out, t_out)
-                return p_out, t_out
-            return wrapped
         primals_out, jacs_out, laps_out = vhv_by_jvp(
-            wrap_jvp(jvp.call_wrapped), primals_in, jacs_in, laps_in,
-            inner_jvp=wrap_jvp(jvp.f))
+            wrap_custom_jvp(jvp).call_wrapped, primals_in, jacs_in, laps_in,
+            inner_jvp=wrap_custom_jvp(lu.wrap_init(jvp.f)).call_wrapped)
         return [LapTracer(self, p, j, l)
                 for p, j, l in zip(primals_out, jacs_out, laps_out)]
 
@@ -198,6 +189,26 @@ class LapTrace(core.Trace):
 
 
 call_param_updaters: dict[core.Primitive, Callable[..., Any]] = {}
+
+
+def zero_tangent_from_primal(primal):
+    return Zero(core.get_aval(primal).at_least_vspace())
+
+
+@lu.transformation_with_aux
+def flatten_fun_output(*args):
+    ans = yield args, {}
+    yield tree_flatten(ans)
+
+
+@lu.transformation
+def wrap_custom_jvp(primals_in, tangents_in):
+    tangents_in = smap(ad.instantiate_zeros, tangents_in)
+    tangents_in = smap(ad.replace_float0s, primals_in, tangents_in)
+    ans = yield (*primals_in, *tangents_in), {}
+    primals_out, tangents_out = split_list(ans, [len(ans) // 2])
+    tangents_out = smap(ad.recast_to_float0, primals_out, tangents_out)
+    yield primals_out, tangents_out
 
 
 def my_jvp(fun, primals, tangents):
@@ -237,16 +248,6 @@ def primitive_by_jvp(primitive, primals_in, jacs_in, laps_in, **params):
     func = partial(primitive.bind, **params)
     f_jvp = partial(my_jvp, func)
     return vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None)
-
-
-def zero_tangent_from_primal(primal):
-    return Zero(core.get_aval(primal).at_least_vspace())
-
-
-@lu.transformation_with_aux
-def flatten_fun_output(*args):
-    ans = yield args, {}
-    yield tree_flatten(ans)
 
 
 ### rule definitions
