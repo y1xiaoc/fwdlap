@@ -257,7 +257,7 @@ def defmultivar(prim):
     lap_rules[prim] = partial(multivar_prop, prim)
 
 def multivar_prop(prim, primals_in, jacs_in, laps_in, **params):
-    # print("multivar rule", prim)
+    print("multivar rule", prim)
     pprim = partial(prim.bind, **params)
     z0, z1, z2 = primals_in, jacs_in, laps_in
     o0, o2_2 = my_jvp(pprim, z0, z2)
@@ -276,18 +276,26 @@ def multivar_prop(prim, primals_in, jacs_in, laps_in, **params):
         return jax.vmap(vhv, in_axes=0, out_axes=0)(v1, v2)
     o2 = o2_2
     for i in range(len(primals_in)):
-        fold_z1 = [zero_tangent_from_primal(p)
-                   if j < i else _mul2(t) if j > i else t
+        triu_z1 = [zero_tangent_from_primal(p) if j <= i else t
                    for j, (p, t) in enumerate(zip(z0,z1))]
         diag_z1 = [zero_tangent_from_primal(p) if j != i else t
                    for j, (p, t) in enumerate(zip(z0,z1))]
-        o2_1_slice = vmapped_vhv(fold_z1, diag_z1)
-        o2 = ad.add_tangents(_sum0(o2_1_slice), o2)
+        o2_1_diag = vmapped_vhv(diag_z1, diag_z1)
+        o2 = ad.add_tangents(_sum0(o2_1_diag), o2)
+        o2_1_triu = vmapped_vhv(triu_z1, diag_z1)
+        o2 = ad.add_tangents(_mul2(_sum0(o2_1_triu)), o2)
     return o0, o1, o2
 
 defmultivar(lax.mul_p)
-defmultivar(lax.div_p)
 defmultivar(lax.dot_general_p)
+defmultivar(lax.conv_general_dilated_p)
+# This rule will only be faster when the operator is bilinear.
+# Because the diagonal part of o2_1 is Zero.
+# Hence we do not apply it for the following primitives.
+# defmultivar(lax.div_p)
+# defmultivar(lax.rem_p)
+# defmultivar(lax.pow_p)
+# defmultivar(lax.atan2_p)
 
 
 def lap_jaxpr(jaxpr: core.ClosedJaxpr,
