@@ -225,7 +225,7 @@ def vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None):
     z0, z1, z2 = primals_in, jacs_in, laps_in
     if inner_jvp is None:
         inner_jvp = f_jvp
-    def hvv(v):
+    def vhv(v):
         inner = lambda *a: inner_jvp(a, v)[1]
         return my_jvp(inner, z0, v)
     # second term in laplacian
@@ -237,9 +237,9 @@ def vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None):
               if multi_out else zero_tangent_from_primal(o0))
         o2 = o2_2
     else:
-        o1, o2_1 = jax.vmap(hvv, in_axes=0, out_axes=0)(z1)
+        o1, o2_1 = jax.vmap(vhv, in_axes=0, out_axes=0)(z1)
         add_o2 = lambda a, b: (b if type(a) is Zero else a.sum(0)
-                            if type(b) is Zero else a.sum(0) + b)
+                               if type(b) is Zero else a.sum(0) + b)
         o2 = smap(add_o2, o2_1, o2_2) if multi_out else add_o2(o2_1, o2_2)
     return o0, o1, o2
 
@@ -253,6 +253,42 @@ def primitive_by_jvp(primitive, primals_in, jacs_in, laps_in, **params):
 ### rule definitions
 
 lap_rules = {}
+
+
+def defmultivar(prim):
+    lap_rules[prim] = partial(multivar_prop, prim)
+
+def multivar_prop(prim, primals_in, jacs_in, laps_in, **params):
+    # print("multivar rule", prim)
+    pprim = partial(prim.bind, **params)
+    z0, z1, z2 = primals_in, jacs_in, laps_in
+    o0, o2_2 = my_jvp(pprim, z0, z2)
+    if all(type(j) is Zero for j in jacs_in):
+        o1 = zero_tangent_from_primal(o0)
+        return o0, o1, o2_2
+    o1 = jax.vmap(lambda v: my_jvp(pprim, z0, v), 0, 0)(z1)[1]
+    mul2 = lambda x: 2*x if type(x) is not Zero else x
+    add_o2 = lambda a, b: (b if type(a) is Zero else a.sum(0)
+                           if type(b) is Zero else a.sum(0) + b)
+    def vhv(v1, v2):
+        inner = lambda *a: my_jvp(pprim, a, v1)[1]
+        return my_jvp(inner, z0, v2)[1]
+    o2 = o2_2
+    for i in range(len(primals_in)):
+        fold_z1 = [zero_tangent_from_primal(p)
+                   if j < i else mul2(t) if j > i else t
+                   for j, (p, t) in enumerate(zip(z0,z1))]
+        diag_z1 = [zero_tangent_from_primal(p) if j != i else t
+                   for j, (p, t) in enumerate(zip(z0,z1))]
+        o2_1_slice = (jax.vmap(vhv, in_axes=0, out_axes=0)(fold_z1, diag_z1)
+                      if tree_flatten((fold_z1, diag_z1))[0] else
+                      zero_tangent_from_primal(o0))
+        o2 = add_o2(o2_1_slice, o2)
+    return o0, o1, o2
+
+defmultivar(lax.mul_p)
+defmultivar(lax.div_p)
+defmultivar(lax.dot_general_p)
 
 
 def lap_jaxpr(jaxpr: core.ClosedJaxpr,
