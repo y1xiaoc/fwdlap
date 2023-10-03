@@ -257,7 +257,6 @@ def defmultivar(prim):
     lap_rules[prim] = partial(multivar_prop, prim)
 
 def multivar_prop(prim, primals_in, jacs_in, laps_in, **params):
-    print("multivar rule", prim)
     pprim = partial(prim.bind, **params)
     z0, z1, z2 = primals_in, jacs_in, laps_in
     o0, o2_2 = my_jvp(pprim, z0, z2)
