@@ -40,7 +40,7 @@ from jax.experimental.pjit import pjit_p
 
 def lap(fun, primals, jacobians, laplacians):
     try:
-        jsize, = set(map(lambda x:x.shape[0], jacobians))
+        jsize, = set(map(lambda x:x.shape[0], tree_flatten(jacobians)[0]))
     except ValueError:
         msg = "jacobians have inconsistent first dimensions for different arguments"
         raise ValueError(msg) from None
@@ -315,7 +315,7 @@ def _lap_jaxpr(jaxpr, jsize, nonzeros1, nonzeros2, instantiate):
     f_jvp, out_nonzeros = f_lap_traceable(lap_fun(lap_subtrace(f), jsize, instantiate),
                                           nonzeros1, nonzeros2)
     jac_avals = [aval.update(shape=(jsize, *aval.shape))
-                 for aval, nz in zip(jaxpr.in_avals, nonzeros2) if nz]
+                 for aval, nz in zip(jaxpr.in_avals, nonzeros1) if nz]
     lap_avals = [aval for aval, nz in zip(jaxpr.in_avals, nonzeros2) if nz]
     avals_in = [*jaxpr.in_avals, *jac_avals, *lap_avals]
     jaxpr_out, avals_out, literals_out = pe.trace_to_jaxpr_dynamic(f_jvp, avals_in)
