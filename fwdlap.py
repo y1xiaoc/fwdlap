@@ -22,7 +22,7 @@ import jax
 from jax import lax
 import jax.numpy as jnp
 from jax.tree_util import (tree_structure, treedef_is_leaf,
-                           tree_flatten, tree_unflatten,)
+                           tree_flatten, tree_unflatten, Partial)
 
 from jax import core
 try:
@@ -30,6 +30,7 @@ try:
 except ImportError:
     from jax import linear_util as lu
 from jax.util import split_list, safe_map as smap
+from jax.api_util import flatten_fun_nokwargs
 from jax.interpreters import ad
 from jax.interpreters import partial_eval as pe
 from jax.interpreters.ad import Zero
@@ -39,18 +40,8 @@ from jax.experimental.pjit import pjit_p
 
 
 def lap(fun, primals, jacobians, laplacians):
-    try:
-        jsize, = set(map(lambda x:x.shape[0], tree_flatten(jacobians)[0]))
-    except ValueError:
-        msg = "jacobians have inconsistent first dimensions for different arguments"
-        raise ValueError(msg) from None
-
-    for i, (x, j, l) in enumerate(zip(primals, jacobians, laplacians)):
-        for t, name in ((x, "primal"), (j, "jacobian"), (l, "laplacian")):
-            treedef = tree_structure(t)
-            if not treedef_is_leaf(treedef):
-                raise ValueError(f"{name} value at position {i} is not an array")
-
+    check_no_nested(primals, jacobians, laplacians)
+    jsize = get_jsize(jacobians)
     f, out_tree = flatten_fun_output(lu.wrap_init(fun))
     out_primals, out_jacs, out_laps = lap_fun(
         lap_subtrace(f), jsize, True).call_wrapped(
@@ -58,6 +49,57 @@ def lap(fun, primals, jacobians, laplacians):
     return (tree_unflatten(out_tree(), out_primals),
             tree_unflatten(out_tree(), out_jacs),
             tree_unflatten(out_tree(), out_laps))
+
+
+def lap_partial(fun, primals, example_jacs, example_laps):
+    # make the lap tracer with wrapped (flattened) function
+    check_no_nested(primals, example_jacs, example_laps)
+    jsize = get_jsize(example_jacs)
+    f, f_out_tree = flatten_fun_output(lu.wrap_init(fun))
+    f_lap = lap_fun(lap_subtrace(f), jsize, True)
+    # partial eval, including pre and post process
+    in_pvals = (tuple(pe.PartialVal.known(p) for p in primals)
+                + tuple(pe.PartialVal.unknown(core.get_aval(p))
+                        for p in tree_flatten((example_jacs, example_laps))[0]))
+    _, in_tree = tree_flatten((primals, example_jacs, example_laps))
+    f_lap_flat, lap_out_tree = flatten_fun_nokwargs(f_lap, in_tree)
+    jaxpr, out_pvals, consts = pe.trace_to_jaxpr_nounits(f_lap_flat, in_pvals)
+    op_pvals, oj_pvals, ol_pvals = tree_unflatten(lap_out_tree(), out_pvals)
+    # collect known primals out
+    f_out_tree = f_out_tree()
+    assert all(opp.is_known() for opp in op_pvals)
+    op_flat = [opp.get_known() for opp in op_pvals]
+    primals_out = tree_unflatten(f_out_tree, op_flat)
+    # build function for unknown laplacian
+    def pe_lap(consts, jacs, laps):
+        oj_ol_flat = core.eval_jaxpr(jaxpr, consts, *tree_flatten((jacs, laps))[0])
+        oj_ol_flat_ = iter(oj_ol_flat)
+        oj_flat = [ojp.get_known() if ojp.is_known() else next(oj_ol_flat_)
+                   for ojp in oj_pvals]
+        ol_flat = [olp.get_known() if olp.is_known() else next(oj_ol_flat_)
+                   for olp in ol_pvals]
+        assert next(oj_ol_flat_, None) is None
+        return (tree_unflatten(f_out_tree, oj_flat),
+                tree_unflatten(f_out_tree, ol_flat))
+    # make partial eval a pytree
+    return primals_out, Partial(pe_lap, consts)
+
+
+def get_jsize(jacobians):
+    try:
+        jsize, = set(map(lambda x:x.shape[0], tree_flatten(jacobians)[0]))
+        return jsize
+    except ValueError:
+        msg = "jacobians have inconsistent first dimensions for different arguments"
+        raise ValueError(msg) from None
+
+
+def check_no_nested(primals, jacobians, laplacians):
+    for i, (x, j, l) in enumerate(zip(primals, jacobians, laplacians)):
+        for t, name in ((x, "primal"), (j, "jacobian"), (l, "laplacian")):
+            treedef = tree_structure(t)
+            if not treedef_is_leaf(treedef):
+                raise ValueError(f"{name} value at position {i} is not an array")
 
 
 @lu.transformation
@@ -86,14 +128,6 @@ def lap_subtrace(main, primals, jacobians, laplacians):
     out_primals, out_jacs, out_laps = unzip3((t.primal, t.jacobian, t.laplacian)
                                              for t in out_tracers)
     yield out_primals, out_jacs, out_laps
-
-
-@lu.transformation_with_aux
-def traceable(in_tree_def, *primals_jacs_laps):
-    primals_in, jacs_in, laps_in = tree_unflatten(in_tree_def, primals_jacs_laps)
-    primals_out, jacs_out, laps_out = yield (primals_in, jacs_in, laps_in), {}
-    out_flat, out_tree_def = tree_flatten((primals_out, jacs_out, laps_out))
-    yield out_flat, out_tree_def
 
 
 class LapTracer(core.Tracer):
@@ -151,11 +185,11 @@ class LapTrace(core.Trace):
         primals_in, jacs_in, laps_in = unzip3((t.primal, t.jacobian, t.laplacian)
                                               for t in tracers)
         primals_jacs_laps, in_tree_def = tree_flatten((primals_in, jacs_in, laps_in))
-        f_jet, out_tree_def = traceable(lap_subtrace(f, self.main), in_tree_def)
+        f_lap, out_tree_def = flatten_fun_nokwargs(lap_subtrace(f, self.main), in_tree_def)
         update_params = call_param_updaters.get(call_primitive)
         new_params = (update_params(params, len(primals_jacs_laps))
                       if update_params else params)
-        result = call_primitive.bind(f_jet, *primals_jacs_laps, **new_params)
+        result = call_primitive.bind(f_lap, *primals_jacs_laps, **new_params)
         primals_out, jacs_out, laps_out = tree_unflatten(out_tree_def(), result)
         return [LapTracer(self, p, j, l)
                 for p, j, l in zip(primals_out, jacs_out, laps_out)]
