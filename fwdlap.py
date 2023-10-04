@@ -80,9 +80,9 @@ def lap_fun(jsize, instantiate, primals, jacobians, laplacians):
 @lu.transformation
 def lap_subtrace(main, primals, jacobians, laplacians):
     trace = LapTrace(main, core.cur_sublevel())
-    in_tracers = map(partial(LapTracer, trace), primals, jacobians, laplacians)
+    in_tracers = smap(partial(LapTracer, trace), primals, jacobians, laplacians)
     ans = yield in_tracers, {}
-    out_tracers = map(trace.full_raise, ans)
+    out_tracers = smap(trace.full_raise, ans)
     out_primals, out_jacs, out_laps = unzip3((t.primal, t.jacobian, t.laplacian)
                                              for t in out_tracers)
     yield out_primals, out_jacs, out_laps
@@ -169,7 +169,7 @@ class LapTrace(core.Trace):
         def todo(x):
             primals, jacs, laps = tree_unflatten(treedef, x)
             trace = LapTrace(main, core.cur_sublevel())
-            return map(partial(LapTracer, trace), primals, jacs, laps)
+            return smap(partial(LapTracer, trace), primals, jacs, laps)
         return out, todo
 
     def process_custom_jvp_call(self, primitive, fun, jvp, tracers, *,
