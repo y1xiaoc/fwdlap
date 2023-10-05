@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Part of this code take references from jet and jvp in jax
+# This code takes references from jet and jvp in jax
 
 from typing import Any, Callable, Sequence, Union
 
