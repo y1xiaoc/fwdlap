@@ -14,11 +14,9 @@
 #
 # This code takes references from jet and jvp in jax
 
-from typing import Any, Callable, Sequence, Union
+from typing import Any, Callable
 
 from functools import partial
-
-import numpy as np
 
 import jax
 from jax import lax
@@ -347,7 +345,7 @@ def primitive_by_jvp(primitive, primals_in, jacs_in, laps_in, **params):
 
 ### rule definitions
 
-lap_rules = {}
+lap_rules: dict[core.Primitive, Callable[..., Any]] = {}
 
 
 def defmultivar(prim):
@@ -394,12 +392,7 @@ defmultivar(lax.conv_general_dilated_p)
 # defmultivar(lax.atan2_p)
 
 
-def lap_jaxpr(jaxpr: core.ClosedJaxpr,
-              jsize: int,
-              nonzeros1: Sequence[bool],
-              nonzeros2: Sequence[bool],
-              instantiate: Union[bool, Sequence[bool]]
-              ) -> tuple[core.ClosedJaxpr, list[bool]]:
+def lap_jaxpr(jaxpr, jsize, nonzeros1, nonzeros2, instantiate):
     if type(instantiate) is bool: # noqa: E721
         instantiate = (instantiate,) * len(jaxpr.out_avals)
     return _lap_jaxpr(jaxpr, jsize,
