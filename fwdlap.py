@@ -42,6 +42,37 @@ from jax.experimental.pjit import pjit_p
 
 
 def lap(fun, primals, jacobians, laplacians):
+    """
+    Computes the (forward mode) Jacobian and Laplacian of a function `fun`.
+
+    This function has very similar semantics to `jax.jvp`, except that it
+    requires batched tangent vectors (jacobians) and laplacians for each input,
+    and returns batched jvp and the cumulated laplacian from the batched tangents.
+
+    Args:
+        fun: A function that takes in `primals` and returns an output.
+          Its arguments have to be arrays or scalars, but not in nested python
+          containers. Its output can be any pytrees of arrays or scalars.
+        primals: The primal values at which the Jacobian of `fun` should be
+          evaluated. Should be either a tuple or a list of arguments. and its
+          length should be equal to the number of positional parameters of `fun`.
+        jacobians: The Jacobian matrices (batched tangent vectors) for each
+          input to evaluate the jvp. Should be either a tuple or a list of
+          arguments with the same tree structure as `primals`, with an exception
+          of symbolic `Zero` values that represent zero Jacobians. The Jacobians
+          should have an extra leading dimension compared to the primal values,
+          which is the batch size and will be summed over in the Laplacian.
+        laplacians: The Laplacian vectors for each input to evaluate the
+          forward laplacian. Should be either a tuple or a list of arguments
+          with the same tree structure as `primals`, with an exception of
+          symbolic `Zero` values that represent zero Laplacians.
+
+    Returns:
+        A tuple of three elements:
+        - The output of `fun` at `primals`.
+        - Jacobian matrices of the output with respect to each output.
+        - Laplacian vectors of the output with respect to each output.
+    """
     check_no_nested(primals, jacobians, laplacians)
     jsize = get_jsize(jacobians)
     f, out_tree = flatten_fun_output(lu.wrap_init(fun))
@@ -54,6 +85,36 @@ def lap(fun, primals, jacobians, laplacians):
 
 
 def lap_partial(fun, primals, example_jacs, example_laps):
+    """
+    The partial eval version of `lap`.
+
+    This function will compute the primal output of `fun` and postpone
+    the jacobian and laplacian calculation in a returned function.
+    It takes exact same arguments as `lap`, but this time `example_jacs`
+    and `example_laps` are only used to determine the shape.
+
+    Args:
+        fun: A function that takes in `primals` and returns an output.
+          Its arguments have to be arrays or scalars, but not in nested python
+          containers. Its output can be any pytrees of arrays or scalars.
+        primals: The primal values at which the Jacobian of `fun` should be
+          evaluated. Should be either a tuple or a list of arguments. and its
+          length should be equal to the number of positional parameters of `fun`.
+        example_jacs: The Jacobian matrices (batched tangent vectors) for each
+          input to evaluate the jvp. See `lap` for more details. The value does
+          not matter, only the shape (or whether it's symboilc `Zero`) is used.
+        example_laps: The Laplacian vectors for each input to evaluate the
+          forward laplacian. See `lap` for more details. Only the shape
+          (or whether it's symboilc `Zero`) is used.
+
+    Returns:
+        A tuple of two elements:
+        - The output of `fun` at `primals`.
+        - A function that takes in the jacobian and laplacian arguments
+          and returns the jacobian and laplacian of the output. The tree
+          structure of jacobian and laplatian arguments should be the same
+          as `example_jacs` and `example_laps` respectively.
+    """
     # make the lap tracer with wrapped (flattened) function
     check_no_nested(primals, example_jacs, example_laps)
     jsize = get_jsize(example_jacs)
