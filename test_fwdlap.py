@@ -1,0 +1,66 @@
+from functools import partial
+
+import pytest
+import numpy as np
+import jax
+import jax.numpy as jnp
+from jax.example_libraries import stax
+from jax.example_libraries.stax import (
+    Conv, Dense, MaxPool, Relu, Flatten, Softmax)
+
+import fwdlap
+
+
+def get_network():
+    # Use stax to set up network initialization and evaluation functions
+    net_init, net_apply = stax.serial(
+        Conv(32, (3, 3), padding='SAME'), Relu,
+        Conv(64, (3, 3), padding='SAME'), Relu,
+        MaxPool((2, 2)), Flatten,
+        Dense(128), Relu,
+        Dense(10), Softmax,
+    )
+    # Initialize parameters, no batch shape
+    rng = jax.random.PRNGKey(0)
+    in_shape = (1, 5, 5, 2)
+    out_shape, net_params = net_init(rng, in_shape)
+    return net_apply, net_params, in_shape, out_shape
+
+
+@pytest.fixture(scope="module")
+def common_data():
+    key = jax.random.PRNGKey(1)
+    net_apply, net_params, in_shape, out_shape = get_network()
+    net_fn = jax.jit(partial(net_apply, net_params)) # mysterious error if no jit
+    x = jax.random.normal(key, in_shape)
+    jac = jax.jacrev(net_fn)(x)
+    hess = jax.hessian(net_fn)(x)
+    lap = hess.reshape(*out_shape, x.size, x.size).trace(0, -1, -2)
+    return net_fn, x, jac, lap
+
+
+@pytest.mark.parametrize("symbolic_zero", [True, False])
+def test_lap(common_data, symbolic_zero):
+    net_fn, x, jac_target, lap_target = common_data
+    eye = jnp.eye(x.size).reshape(x.size, *x.shape)
+    zero = (fwdlap.Zero.from_value(x)
+            if symbolic_zero else jnp.zeros_like(x))
+    out, jac, lap = fwdlap.lap(net_fn, (x,), (eye,), (zero,))
+    jac = jnp.moveaxis(jac, -1, 0).reshape(*out.shape, *x.shape)
+    np.testing.assert_allclose(out, net_fn(x))
+    np.testing.assert_allclose(jac, jac_target, atol=1e-5)
+    np.testing.assert_allclose(lap, lap_target, atol=1e-5)
+
+
+@pytest.mark.parametrize("symbolic_zero", [True, False])
+def test_lap_partial(common_data, symbolic_zero):
+    net_fn, x, jac_target, lap_target = common_data
+    eye = jnp.eye(x.size).reshape(x.size, *x.shape)
+    zero = (fwdlap.Zero.from_value(x)
+            if symbolic_zero else jnp.zeros_like(x))
+    out, lap_pe = fwdlap.lap_partial(net_fn, (x,), (eye,), (zero,))
+    jac, lap = lap_pe((eye,), (zero,))
+    jac = jnp.moveaxis(jac, -1, 0).reshape(*out.shape, *x.shape)
+    np.testing.assert_allclose(out, net_fn(x))
+    np.testing.assert_allclose(jac, jac_target, atol=1e-5)
+    np.testing.assert_allclose(lap, lap_target, atol=1e-5)
