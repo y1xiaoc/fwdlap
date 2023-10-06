@@ -1,6 +1,6 @@
 # Poor Man's Forward Laplacian (using JAX Tracer!)
 
-This is a fan implemented (unofficial) version of the method of computing laplacian in one single forward pass, as described in the paper [Forward Laplacian: A New Computational Framework for
+This is a fan implemented (unofficial) version of the method of computing laplacian in one single forward pass, as described in the brilliant paper [Forward Laplacian: A New Computational Framework for
 Neural Network-based Variational Monte Carlo](https://arxiv.org/pdf/2307.08214.pdf).
 
 ## Installation

@@ -10,7 +10,7 @@ build-backend = "setuptools.build_meta"
 name = "fwdlap"
 description = "Forward Laplacian implementation with JAX tracer"
 authors = [{name = "Yixiao Chen", email = "yixiaoc@princeton.edu"}]
-license = {text = "Apache-2.0", file = "LICENSE"}
+license = {text = "Apache-2.0"}
 requires-python = ">=3.9"
 classifiers = [
     "Development Status :: 3 - Alpha"
