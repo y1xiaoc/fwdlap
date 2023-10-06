@@ -132,7 +132,7 @@ def lap_partial(fun, primals, example_jacs, example_laps):
     op_flat = [opp.get_known() for opp in op_pvals]
     primals_out = tree_unflatten(f_out_tree, op_flat)
     # build function for unknown laplacian
-    def pe_lap(consts, jacs, laps):
+    def lap_pe(consts, jacs, laps):
         oj_ol_flat = core.eval_jaxpr(jaxpr, consts, *tree_flatten((jacs, laps))[0])
         oj_ol_flat_ = iter(oj_ol_flat)
         oj_flat = [ojp.get_known() if ojp.is_known() else next(oj_ol_flat_)
@@ -143,7 +143,7 @@ def lap_partial(fun, primals, example_jacs, example_laps):
         return (tree_unflatten(f_out_tree, oj_flat),
                 tree_unflatten(f_out_tree, ol_flat))
     # make partial eval a pytree
-    return primals_out, Partial(pe_lap, consts)
+    return primals_out, Partial(lap_pe, consts)
 
 
 def get_jsize(jacobians):
