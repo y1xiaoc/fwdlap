@@ -41,7 +41,7 @@ from jax.experimental.pjit import pjit_p
 
 def lap(fun, primals, jacobians, laplacians):
     """
-    Computes the (forward mode) Jacobian and Laplacian of a function `fun`.
+    Computes the (forward mode) jacobian and laplacian of a function `fun`.
 
     This function has very similar semantics to `jax.jvp`, except that it
     requires batched tangent vectors (jacobians) and laplacians for each input,
@@ -51,25 +51,25 @@ def lap(fun, primals, jacobians, laplacians):
         fun: A function that takes in `primals` and returns an output.
           Its arguments have to be arrays or scalars, but not in nested python
           containers. Its output can be any pytrees of arrays or scalars.
-        primals: The primal values at which the Jacobian of `fun` should be
+        primals: The primal values at which the jacobian of `fun` should be
           evaluated. Should be either a tuple or a list of arguments. and its
           length should be equal to the number of positional parameters of `fun`.
-        jacobians: The Jacobian matrices (batched tangent vectors) for each
+        jacobians: The jacobian matrices (batched tangent vectors) for each
           input to evaluate the jvp. Should be either a tuple or a list of
           arguments with the same tree structure as `primals`, with an exception
-          of symbolic `Zero` values that represent zero Jacobians. The Jacobians
+          of symbolic `Zero` values that represent zero jacobians. The jacobians
           should have an extra leading dimension compared to the primal values,
-          which is the batch size and will be summed over in the Laplacian.
-        laplacians: The Laplacian vectors for each input to evaluate the
+          which is the batch size and will be summed over in the laplacian.
+        laplacians: The laplacian vectors for each input to evaluate the
           forward laplacian. Should be either a tuple or a list of arguments
           with the same tree structure as `primals`, with an exception of
-          symbolic `Zero` values that represent zero Laplacians.
+          symbolic `Zero` values that represent zero laplacians.
 
     Returns:
         A tuple of three elements:
-        - The output of `fun` at `primals`.
-        - Jacobian matrices of the output with respect to each output.
-        - Laplacian vectors of the output with respect to each output.
+        - The outputs of `fun` at `primals`.
+        - Jacobian matrices with respect to each output.
+        - Laplacian vectors with respect to each output.
     """
     check_no_nested(primals, jacobians, laplacians)
     jsize = get_jsize(jacobians)
@@ -95,13 +95,13 @@ def lap_partial(fun, primals, example_jacs, example_laps):
         fun: A function that takes in `primals` and returns an output.
           Its arguments have to be arrays or scalars, but not in nested python
           containers. Its output can be any pytrees of arrays or scalars.
-        primals: The primal values at which the Jacobian of `fun` should be
+        primals: The primal values at which the jacobian of `fun` should be
           evaluated. Should be either a tuple or a list of arguments. and its
           length should be equal to the number of positional parameters of `fun`.
-        example_jacs: The Jacobian matrices (batched tangent vectors) for each
+        example_jacs: The jacobian matrices (batched tangent vectors) for each
           input to evaluate the jvp. See `lap` for more details. The value does
           not matter, only the shape (or whether it's symboilc `Zero`) is used.
-        example_laps: The Laplacian vectors for each input to evaluate the
+        example_laps: The laplacian vectors for each input to evaluate the
           forward laplacian. See `lap` for more details. Only the shape
           (or whether it's symboilc `Zero`) is used.
 

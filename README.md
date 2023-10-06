@@ -46,7 +46,7 @@ At the time of writing, the performance comparison with the official version is 
 
 ## Example on kinetic energy
 
-Here's an example of using the `fwdlap` module to calculate the kinetic energy of a given log of wavefunction `log_psi`. It supports (mini_batched) loop evaluation in both the batch dimension (`batch_size`) and the inner jacobian dimension (`inner_size`). Set them to None will use the full batched version. Choosing these two parameters carefully, this implementation can achieve 3x speed up on some attention based neural network wavefunctions, comparing to the old one used in the ferminet repo. It also saves memory as there's no need to store the intermediate results of backward propagation.
+Here's an example of using the `fwdlap` module to calculate the kinetic energy of a given log of wavefunction `log_psi`. It supports (mini_batched) loop evaluation in both the batch dimension (`batch_size`) and the inner jacobian dimension (`inner_size`). Set them to `None` will use the full batch version. Choosing these two parameters carefully, this implementation can achieve 3x speed up on some attention based neural network wavefunctions, comparing to the old one used in the ferminet repo. It also saves memory as there's no need to store the intermediate results of backward propagation.
 
 ```python
 import jax
