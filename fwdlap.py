@@ -279,8 +279,8 @@ class LapTrace(core.Trace):
                 for p, j, l in zip(primals_out, jacs_out, laps_out)]
 
     def process_custom_vjp_call(self, primitive, fun, fwd, bwd, tracers, out_trees):
-        del primitive, fwd, bwd, out_trees  # Unused.
-        return fun.call_wrapped(*tracers)
+        raise TypeError("can't apply forward-mode laplacian to a custom_vjp "
+                        "function.")
 
 
 call_param_updaters: dict[core.Primitive, Callable[..., Any]] = {}
