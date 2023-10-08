@@ -274,7 +274,7 @@ class LapTrace(core.Trace):
         primals_in = smap(core.full_lower, primals_in)
         primals_out, jacs_out, laps_out = vhv_by_jvp(
             wrap_custom_jvp(jvp).call_wrapped, primals_in, jacs_in, laps_in,
-            inner_jvp=wrap_custom_jvp(lu.wrap_init(jvp.f)).call_wrapped)
+            inner_jvp=wrap_custom_jvp(_unwrap(jvp)).call_wrapped)
         return [LapTracer(self, p, j, l)
                 for p, j, l in zip(primals_out, jacs_out, laps_out)]
 
@@ -304,6 +304,11 @@ def wrap_custom_jvp(primals_in, tangents_in):
     primals_out, tangents_out = split_list(ans, [len(ans) // 2])
     tangents_out = smap(ad.recast_to_float0, primals_out, tangents_out)
     yield primals_out, tangents_out
+
+
+def _unwrap(wrapped: lu.WrappedFun) -> lu.WrappedFun:
+    return lu.WrappedFun(wrapped.f, wrapped.transforms[1:],
+                         wrapped.stores[1:], wrapped.params, None, None)
 
 
 def my_jvp(fun, primals, tangents):
