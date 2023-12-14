@@ -304,21 +304,6 @@ def flatten_fun_output(*args):
     yield tree_flatten(ans)
 
 
-@lu.transformation
-def wrap_custom_jvp(primals_in, tangents_in):
-    tangents_in = smap(ad.instantiate_zeros, tangents_in)
-    tangents_in = smap(ad.replace_float0s, primals_in, tangents_in)
-    ans = yield (*primals_in, *tangents_in), {}
-    primals_out, tangents_out = split_list(ans, [len(ans) // 2])
-    tangents_out = smap(ad.recast_to_float0, primals_out, tangents_out)
-    yield primals_out, tangents_out
-
-
-def _unwrap(wrapped: lu.WrappedFun) -> lu.WrappedFun:
-    return lu.WrappedFun(wrapped.f, wrapped.transforms[1:],
-                         wrapped.stores[1:], wrapped.params, None, None)
-
-
 def my_jvp(fun, primals, tangents):
     # this jvp is transparant to Zero, and assumes flattened input
     f, out_tree = flatten_fun_output(lu.wrap_init(fun))
