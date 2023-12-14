@@ -169,7 +169,7 @@ def lap_fun(jsize, instantiate, primals, jacobians, laplacians):
         main.jsize = jsize
         out_primals, out_jacs, out_laps = yield (main, primals, jacobians, laplacians), {}
         del main
-    if type(instantiate) is bool: # noqa: E721
+    if type(instantiate) is bool:
         instantiate = [instantiate] * len(out_jacs)
     out_jacs = [jnp.zeros((jsize, *p.shape), p.dtype)
                 if type(j) is Zero and inst else j
@@ -269,6 +269,8 @@ class LapTrace(core.Trace):
 
     def process_custom_jvp_call(self, primitive, fun, jvp, tracers, *,
                                 symbolic_zeros):
+        if all(type(t.jacobian) is type(t.laplacian) is Zero for t in tracers):
+            return fun.call_wrapped(*(t.primal for t in tracers))
         primals_in, jacs_in, laps_in = unzip3((t.primal, t.jacobian, t.laplacian)
                                               for t in tracers)
         primals_in = smap(core.full_lower, primals_in)
@@ -389,7 +391,7 @@ defmultivar(lax.conv_general_dilated_p)
 
 
 def lap_jaxpr(jaxpr, jsize, nonzeros1, nonzeros2, instantiate):
-    if type(instantiate) is bool: # noqa: E721
+    if type(instantiate) is bool:
         instantiate = (instantiate,) * len(jaxpr.out_avals)
     return _lap_jaxpr(jaxpr, jsize,
                       tuple(nonzeros1), tuple(nonzeros2), tuple(instantiate))
