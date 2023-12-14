@@ -329,12 +329,10 @@ def my_jvp(fun, primals, tangents):
             tree_unflatten(out_tree, out_tangents))
 
 
-def vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None):
+def vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in):
     z0, z1, z2 = primals_in, jacs_in, laps_in
-    if inner_jvp is None:
-        inner_jvp = f_jvp
     def vhv(v):
-        inner = lambda *a: inner_jvp(a, v)[1]
+        inner = lambda *a: f_jvp(a, v)[1]
         return my_jvp(inner, z0, v)
     # second term in laplacian
     o0, o2_2 = f_jvp(z0, z2)
@@ -353,7 +351,7 @@ def vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None):
 def primitive_by_jvp(primitive, primals_in, jacs_in, laps_in, **params):
     func = partial(primitive.bind, **params)
     f_jvp = partial(my_jvp, func)
-    return vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None)
+    return vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in)
 
 
 ### rule definitions
