@@ -335,10 +335,55 @@ def vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in):
     return o0, o1, o2
 
 
+def vhv_by_jvp2(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None):
+    if inner_jvp is None:
+        inner_jvp = f_jvp
+    z0, z1, z2 = primals_in, jacs_in, laps_in
+    if all(type(j) is Zero for j in z1):
+        o0, o2_2 = f_jvp(z0, z2)
+        o1 = jax.tree_map(zero_tangent_from_primal, o0)
+        return o0, o1, o2_2
+    def vhv(v):
+        inner = lambda *a: inner_jvp(a, v)[1]
+        return my_jvp(inner, z0, v)[1]
+    jsize = get_jsize(z1)
+    cz_1_2 = jax.tree_map(lambda x, y: jnp.concatenate((x, y[None]), axis=0), z1, z2)
+    o0, co_1_22 = jax.vmap(f_jvp, in_axes=(None, 0), out_axes=(None, 0))(z0, cz_1_2)
+    o1 = jax.tree_map(lambda x: x[:jsize], co_1_22)
+    o2_2 = jax.tree_map(lambda x: x[jsize], co_1_22)
+    o2_1 = jax.vmap(vhv, in_axes=0, out_axes=0)(z1)
+    _sum0 = lambda x: x.sum(0) if type(x) is not Zero else x
+    _add_o2 = lambda a, b: ad.add_tangents(_sum0(a), b)
+    multi_out = not treedef_is_leaf(tree_structure(o0))
+    o2 = smap(_add_o2, o2_1, o2_2) if multi_out else _add_o2(o2_1, o2_2)
+    return o0, o1, o2
+
+_cat_primtives = set([
+    # lax.exp_p, lax.exp2_p, lax.expm1_p, lax.log_p, lax.log1p_p, lax.logistic_p,
+    # lax.sin_p, lax.cos_p, lax.tan_p, lax.asin_p, lax.acos_p, lax.atan_p, lax.atan2_p,
+    # lax.sinh_p, lax.cosh_p, lax.tanh_p, lax.asinh_p, lax.acosh_p, lax.atanh_p,
+    # lax.sqrt_p, lax.rsqrt_p, lax.cbrt_p, lax.integer_pow_p,
+    # lax.lgamma_p, lax.digamma_p, lax.polygamma_p, lax.igamma_p, lax.igammac_p,
+    # lax.bessel_i0e_p, lax.bessel_i1e_p,
+    # lax.erf_p, lax.erfc_p, lax.erf_inv_p,
+    # lax.pow_p, lax.div_p, lax.rem_p,
+])
+
+
 def primitive_by_jvp(primitive, primals_in, jacs_in, laps_in, **params):
     func = partial(primitive.bind, **params)
     f_jvp = partial(my_jvp, func)
-    return vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in)
+    try:
+        jax.eval_shape(
+            lambda a, b: jax.tree_map(
+                lambda x, y: jnp.concatenate((x, y[None]), axis=0), a, b),
+            jacs_in, laps_in)
+        can_concat = True
+    except TypeError:
+        can_concat = False
+    can_concat = can_concat and primitive in _cat_primtives
+    vhv_fn = vhv_by_jvp2 if can_concat else vhv_by_jvp
+    return vhv_fn(f_jvp, primals_in, jacs_in, laps_in)
 
 
 ### rule definitions
