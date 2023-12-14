@@ -30,7 +30,7 @@ try:
 except ImportError:
     from jax import linear_util as lu
 from jax.util import split_list, safe_map as smap
-from jax.api_util import flatten_fun_nokwargs
+from jax.api_util import flatten_fun_nokwargs, shaped_abstractify
 from jax.interpreters import ad
 from jax.interpreters import partial_eval as pe
 from jax.interpreters.ad import Zero
@@ -169,7 +169,7 @@ def lap_fun(jsize, instantiate, primals, jacobians, laplacians):
         main.jsize = jsize
         out_primals, out_jacs, out_laps = yield (main, primals, jacobians, laplacians), {}
         del main
-    if type(instantiate) is bool: # noqa: E721
+    if type(instantiate) is bool:
         instantiate = [instantiate] * len(out_jacs)
     out_jacs = [jnp.zeros((jsize, *p.shape), p.dtype)
                 if type(j) is Zero and inst else j
@@ -269,12 +269,22 @@ class LapTrace(core.Trace):
 
     def process_custom_jvp_call(self, primitive, fun, jvp, tracers, *,
                                 symbolic_zeros):
+        if all(type(t.jacobian) is type(t.laplacian) is Zero for t in tracers):
+            return fun.call_wrapped(*(t.primal for t in tracers))
         primals_in, jacs_in, laps_in = unzip3((t.primal, t.jacobian, t.laplacian)
                                               for t in tracers)
         primals_in = smap(core.full_lower, primals_in)
+        jacs_in = smap(ad.instantiate_zeros, jacs_in)
+        laps_in = smap(ad.instantiate_zeros, laps_in)
+        in_avals = smap(shaped_abstractify, (*primals_in, *laps_in))
+        jaxpr, _, consts = pe.trace_to_jaxpr_final(jvp, in_avals)
+        def _jvp(p_in, t_in):
+            outs = core.eval_jaxpr(jaxpr, consts, *p_in, *t_in)
+            p_out, t_out = split_list(outs, [len(outs) // 2])
+            t_out = smap(ad.recast_to_float0, p_out, t_out)
+            return p_out, t_out
         primals_out, jacs_out, laps_out = vhv_by_jvp(
-            wrap_custom_jvp(jvp).call_wrapped, primals_in, jacs_in, laps_in,
-            inner_jvp=wrap_custom_jvp(_unwrap(jvp)).call_wrapped)
+            _jvp, primals_in, jacs_in, laps_in)
         return [LapTracer(self, p, j, l)
                 for p, j, l in zip(primals_out, jacs_out, laps_out)]
 
@@ -296,21 +306,6 @@ def flatten_fun_output(*args):
     yield tree_flatten(ans)
 
 
-@lu.transformation
-def wrap_custom_jvp(primals_in, tangents_in):
-    tangents_in = smap(ad.instantiate_zeros, tangents_in)
-    tangents_in = smap(ad.replace_float0s, primals_in, tangents_in)
-    ans = yield (*primals_in, *tangents_in), {}
-    primals_out, tangents_out = split_list(ans, [len(ans) // 2])
-    tangents_out = smap(ad.recast_to_float0, primals_out, tangents_out)
-    yield primals_out, tangents_out
-
-
-def _unwrap(wrapped: lu.WrappedFun) -> lu.WrappedFun:
-    return lu.WrappedFun(wrapped.f, wrapped.transforms[1:],
-                         wrapped.stores[1:], wrapped.params, None, None)
-
-
 def my_jvp(fun, primals, tangents):
     # this jvp is transparant to Zero, and assumes flattened input
     f, out_tree = flatten_fun_output(lu.wrap_init(fun))
@@ -321,12 +316,10 @@ def my_jvp(fun, primals, tangents):
             tree_unflatten(out_tree, out_tangents))
 
 
-def vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None):
+def vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in):
     z0, z1, z2 = primals_in, jacs_in, laps_in
-    if inner_jvp is None:
-        inner_jvp = f_jvp
     def vhv(v):
-        inner = lambda *a: inner_jvp(a, v)[1]
+        inner = lambda *a: f_jvp(a, v)[1]
         return my_jvp(inner, z0, v)
     # second term in laplacian
     o0, o2_2 = f_jvp(z0, z2)
@@ -345,7 +338,7 @@ def vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None):
 def primitive_by_jvp(primitive, primals_in, jacs_in, laps_in, **params):
     func = partial(primitive.bind, **params)
     f_jvp = partial(my_jvp, func)
-    return vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None)
+    return vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in)
 
 
 ### rule definitions
@@ -398,7 +391,7 @@ defmultivar(lax.conv_general_dilated_p)
 
 
 def lap_jaxpr(jaxpr, jsize, nonzeros1, nonzeros2, instantiate):
-    if type(instantiate) is bool: # noqa: E721
+    if type(instantiate) is bool:
         instantiate = (instantiate,) * len(jaxpr.out_avals)
     return _lap_jaxpr(jaxpr, jsize,
                       tuple(nonzeros1), tuple(nonzeros2), tuple(instantiate))

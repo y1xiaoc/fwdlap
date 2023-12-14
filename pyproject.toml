@@ -41,6 +41,7 @@ select =[
 "B", # bugbear
 ]
 ignore = [
+"E721", # Do not compare types, use 'isinstance()'
 "E731", # Do not assign a lambda expression, use a def 
 "E741", # Don't use I, O, l as variable names
 "F401", # unused import
