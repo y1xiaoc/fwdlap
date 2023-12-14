@@ -353,6 +353,24 @@ def primitive_by_jvp(primitive, primals_in, jacs_in, laps_in, **params):
 lap_rules: dict[core.Primitive, Callable[..., Any]] = {}
 
 
+def multiply_prop(primals_in, jacs_in, laps_in, **params):
+    print("mul")
+    mul = partial(lax.mul_p.bind, **params)
+    o0, o2_2 = my_jvp(mul, primals_in, laps_in)
+    if all(type(j) is Zero for j in jacs_in):
+        o1 = zero_tangent_from_primal(o0)
+        return o0, o1, o2_2
+    o1 = jax.vmap(lambda z: my_jvp(mul, primals_in, z)[1], 0, 0)(jacs_in)
+    if any(type(j) is Zero for j in jacs_in):
+        return o0, o1, o2_2
+    ja, jb = jacs_in
+    o2_1 = 2 * jax.vmap(mul)(ja, jb).sum(0)
+    o2 = ad.add_tangents(o2_1, o2_2)
+    return o0, o1, o2
+
+# lap_rules[lax.mul_p] = multiply_prop
+
+
 def defelemwise(prim, holomorphic=False):
     lap_rules[prim] = partial(elemwise_prop, prim, holomorphic)
 
