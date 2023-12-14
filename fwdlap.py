@@ -356,7 +356,7 @@ def multivar_prop(prim, primals_in, jacs_in, laps_in, **params):
     if all(type(j) is Zero for j in jacs_in):
         o1 = zero_tangent_from_primal(o0)
         return o0, o1, o2_2
-    o1 = jax.vmap(lambda v: my_jvp(pprim, z0, v), 0, 0)(z1)[1]
+    o1 = jax.vmap(lambda v: my_jvp(pprim, z0, v)[1], 0, 0)(z1)
     _mul2 = lambda x: 2*x if type(x) is not Zero else x
     _sum0 = lambda x: x.sum(0) if type(x) is not Zero else x
     def vhv(v1, v2):
