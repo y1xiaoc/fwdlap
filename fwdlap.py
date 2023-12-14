@@ -30,7 +30,7 @@ try:
 except ImportError:
     from jax import linear_util as lu
 from jax.util import split_list, safe_map as smap
-from jax.api_util import flatten_fun_nokwargs
+from jax.api_util import flatten_fun_nokwargs, shaped_abstractify
 from jax.interpreters import ad
 from jax.interpreters import partial_eval as pe
 from jax.interpreters.ad import Zero
@@ -272,9 +272,17 @@ class LapTrace(core.Trace):
         primals_in, jacs_in, laps_in = unzip3((t.primal, t.jacobian, t.laplacian)
                                               for t in tracers)
         primals_in = smap(core.full_lower, primals_in)
+        jacs_in = smap(ad.instantiate_zeros, jacs_in)
+        laps_in = smap(ad.instantiate_zeros, laps_in)
+        in_avals = smap(shaped_abstractify, (*primals_in, *laps_in))
+        jaxpr, _, consts = pe.trace_to_jaxpr_final(jvp, in_avals)
+        def _jvp(p_in, t_in):
+            outs = core.eval_jaxpr(jaxpr, consts, *p_in, *t_in)
+            p_out, t_out = split_list(outs, [len(outs) // 2])
+            t_out = smap(ad.recast_to_float0, p_out, t_out)
+            return p_out, t_out
         primals_out, jacs_out, laps_out = vhv_by_jvp(
-            wrap_custom_jvp(jvp).call_wrapped, primals_in, jacs_in, laps_in,
-            inner_jvp=wrap_custom_jvp(_unwrap(jvp)).call_wrapped)
+            _jvp, primals_in, jacs_in, laps_in)
         return [LapTracer(self, p, j, l)
                 for p, j, l in zip(primals_out, jacs_out, laps_out)]
 
