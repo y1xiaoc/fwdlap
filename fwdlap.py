@@ -428,9 +428,7 @@ def f_lap_traceable(nonzeros1, nonzeros2, *primals_nzjacs_nzlaps):
            (out_nonzeros1, out_nonzeros2))
 
 
-def _pjit_lap_rule(primals_in, jacs_in, laps_in,
-              jaxpr, in_shardings, out_shardings,
-              resource_env, donated_invars, name, keep_unused, inline):
+def _pjit_lap_rule(primals_in, jacs_in, laps_in, *, jaxpr, **params):
     jsize, = set(map(lambda x: x.shape[0], tree_flatten(jacs_in)[0]))
     is_nz_jacs_in = [type(t) is not Zero for t in jacs_in]
     is_nz_laps_in = [type(t) is not Zero for t in laps_in]
@@ -444,17 +442,26 @@ def _pjit_lap_rule(primals_in, jacs_in, laps_in,
     _fz_jacs_out = partial(_filter_zeros, is_nz_jacs_out)
     _fz_laps_out = partial(_filter_zeros, is_nz_laps_out)
 
-    insd, outsd, dovar = in_shardings, out_shardings, donated_invars
+    insd, outsd = params["in_shardings"], params["out_shardings"]
+    dovar = params["donated_invars"]
+    new_params = {
+        **params,
+        "jaxpr": jaxpr_lap,
+        "in_shardings": (*insd, *_fz_jacs_in(insd), *_fz_laps_in(insd)),
+        "out_shardings": (*outsd, *_fz_jacs_out(outsd), *_fz_laps_out(outsd)),
+        "donated_invars": (*dovar, *_fz_jacs_in(dovar), *_fz_laps_in(dovar)),
+    }
+    if "in_layouts" in params:
+        inlo, outlo = params["in_layouts"], params["out_layouts"]
+        new_params["in_layouts"] = (*inlo, *_fz_jacs_in(inlo), *_fz_laps_in(inlo))
+        new_params["out_layouts"] = (*outlo, *_fz_jacs_out(outlo), *_fz_laps_out(outlo))
+
     outputs = pjit_p.bind(
-        *primals_in, *_fz_jacs_in(jacs_in), *_fz_laps_in(laps_in),
-        jaxpr=jaxpr_lap,
-        in_shardings=(*insd, *_fz_jacs_in(insd), *_fz_laps_in(insd)),
-        out_shardings=(*outsd, *_fz_jacs_out(outsd), *_fz_laps_out(outsd)),
-        resource_env=resource_env,
-        donated_invars=(*dovar, *_fz_jacs_in(dovar), *_fz_laps_in(dovar)),
-        name=name,
-        keep_unused=keep_unused,
-        inline=inline)
+        *primals_in,
+        *_fz_jacs_in(jacs_in),
+        *_fz_laps_in(laps_in),
+        **new_params
+    )
 
     primals_out, nzjacs_nzlaps = split_list(outputs, [len(jaxpr.jaxpr.outvars)])
     assert len(primals_out) == len(jaxpr.jaxpr.outvars)
