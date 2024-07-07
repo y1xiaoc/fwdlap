@@ -326,7 +326,7 @@ def vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in):
     multi_out = not treedef_is_leaf(tree_structure(o0))
     # jacobian and first term in laplacian, handle all empty case
     if all(type(j) is Zero for j in z1):
-        o1 = jax.tree_map(zero_tangent_from_primal, o0)
+        o1 = jax.tree_util.tree_map(zero_tangent_from_primal, o0)
         return o0, o1, o2_2
     o1, o2_1 = jax.vmap(vhv, in_axes=0, out_axes=0)(z1)
     _sum0 = lambda x: x.sum(0) if type(x) is not Zero else x
