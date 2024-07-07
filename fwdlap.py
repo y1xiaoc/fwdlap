@@ -269,13 +269,19 @@ class LapTrace(core.Trace):
 
     def process_custom_jvp_call(self, primitive, fun, jvp, tracers, *,
                                 symbolic_zeros):
+        if symbolic_zeros:
+            raise NotImplementedError("symbolic_zeros not implemented")
         if all(type(t.jacobian) is type(t.laplacian) is Zero for t in tracers):
             return fun.call_wrapped(*(t.primal for t in tracers))
+        jsize, = {t.jacobian.shape[0] for t in tracers if type(t.jacobian) is not Zero}
         primals_in, jacs_in, laps_in = unzip3((t.primal, t.jacobian, t.laplacian)
                                               for t in tracers)
         primals_in = smap(core.full_lower, primals_in)
-        jacs_in = smap(ad.instantiate_zeros, jacs_in)
+        jacs_in = [j if type(j) is not Zero
+                   else ad.zeros_like_jaxval(p)[None].repeat(jsize, 0)
+                   for p, j in zip(primals_in, jacs_in)]
         laps_in = smap(ad.instantiate_zeros, laps_in)
+        laps_in = smap(ad.replace_float0s, primals_in, laps_in)
         in_avals = smap(shaped_abstractify, (*primals_in, *laps_in))
         jaxpr, _, consts = pe.trace_to_jaxpr_final(jvp, in_avals)
         def _jvp(p_in, t_in):
