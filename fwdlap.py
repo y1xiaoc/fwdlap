@@ -242,31 +242,6 @@ class LapTrace(core.Trace):
             return [LapTracer(self, p, j, l)
                     for p, j, l in zip(primal_out, jac_out, lap_out)]
 
-    def process_call(self, call_primitive, f, tracers, params):
-        primals_in, jacs_in, laps_in = unzip3((t.primal, t.jacobian, t.laplacian)
-                                              for t in tracers)
-        primals_jacs_laps, in_tree_def = tree_flatten((primals_in, jacs_in, laps_in))
-        f_lap, out_tree_def = flatten_fun_nokwargs(lap_subtrace(f, self.main), in_tree_def)
-        update_params = call_param_updaters.get(call_primitive)
-        new_params = (update_params(params, len(primals_jacs_laps))
-                      if update_params else params)
-        result = call_primitive.bind(f_lap, *primals_jacs_laps, **new_params)
-        primals_out, jacs_out, laps_out = tree_unflatten(out_tree_def(), result)
-        return [LapTracer(self, p, j, l)
-                for p, j, l in zip(primals_out, jacs_out, laps_out)]
-
-    def post_process_call(self, call_primitive, out_tracers, params):
-        primals, jacs, laps = unzip3((t.primal, t.jacobian, t.laplacian)
-                                     for t in out_tracers)
-        out, treedef = tree_flatten((primals, jacs, laps))
-        del primals, jacs, laps
-        main = self.main
-        def todo(x):
-            primals, jacs, laps = tree_unflatten(treedef, x)
-            trace = LapTrace(main, core.cur_sublevel())
-            return smap(partial(LapTracer, trace), primals, jacs, laps)
-        return out, todo
-
     def process_custom_jvp_call(self, primitive, fun, jvp, tracers, *,
                                 symbolic_zeros):
         if symbolic_zeros:
