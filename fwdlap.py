@@ -248,9 +248,9 @@ class LapTrace(core.Trace):
             raise NotImplementedError("symbolic_zeros not implemented")
         if all(type(t.jacobian) is type(t.laplacian) is Zero for t in tracers):
             return fun.call_wrapped(*(t.primal for t in tracers))
-        jsize, = {t.jacobian.shape[0] for t in tracers if type(t.jacobian) is not Zero}
         primals_in, jacs_in, laps_in = unzip3((t.primal, t.jacobian, t.laplacian)
                                               for t in tracers)
+        jsize = get_jsize(jacs_in)
         primals_in = smap(core.full_lower, primals_in)
         jacs_in = [j if type(j) is not Zero
                    else ad.zeros_like_jaxval(p)[None].repeat(jsize, 0)
