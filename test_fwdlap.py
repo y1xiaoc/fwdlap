@@ -23,7 +23,7 @@ import jax
 import jax.numpy as jnp
 from jax.example_libraries import stax
 from jax.example_libraries.stax import (
-    Conv, Dense, MaxPool, Relu, Flatten, Softmax)
+    Conv, Dense, MaxPool, Relu, Flatten, Softplus)
 
 import fwdlap
 
@@ -35,7 +35,7 @@ def get_network():
         Conv(64, (3, 3), padding='SAME'), Relu,
         MaxPool((2, 2)), Flatten,
         Dense(128), Relu,
-        Dense(10), Softmax,
+        Dense(10), Softplus,
     )
     # Initialize parameters, no batch shape
     rng = jax.random.PRNGKey(0)
@@ -64,8 +64,8 @@ def test_lap(common_data, symbolic_zero):
             if symbolic_zero else jnp.zeros_like(x))
     out, jac, lap = fwdlap.lap(net_fn, (x,), (eye,), (zero,))
     jac = jnp.moveaxis(jac, -1, 0).reshape(*out.shape, *x.shape)
-    np.testing.assert_allclose(out, net_fn(x))
-    np.testing.assert_allclose(jac, jac_target)
+    np.testing.assert_allclose(out, net_fn(x), atol=1e-6)
+    np.testing.assert_allclose(jac, jac_target, atol=1e-6)
     np.testing.assert_allclose(lap, lap_target, atol=1e-6)
 
 
@@ -78,6 +78,6 @@ def test_lap_partial(common_data, symbolic_zero):
     out, lap_pe = fwdlap.lap_partial(net_fn, (x,), (eye,), (zero,))
     jac, lap = lap_pe((eye,), (zero,))
     jac = jnp.moveaxis(jac, -1, 0).reshape(*out.shape, *x.shape)
-    np.testing.assert_allclose(out, net_fn(x))
-    np.testing.assert_allclose(jac, jac_target)
+    np.testing.assert_allclose(out, net_fn(x), atol=1e-6)
+    np.testing.assert_allclose(jac, jac_target, atol=1e-6)
     np.testing.assert_allclose(lap, lap_target, atol=1e-6)

@@ -242,40 +242,21 @@ class LapTrace(core.Trace):
             return [LapTracer(self, p, j, l)
                     for p, j, l in zip(primal_out, jac_out, lap_out)]
 
-    def process_call(self, call_primitive, f, tracers, params):
-        primals_in, jacs_in, laps_in = unzip3((t.primal, t.jacobian, t.laplacian)
-                                              for t in tracers)
-        primals_jacs_laps, in_tree_def = tree_flatten((primals_in, jacs_in, laps_in))
-        f_lap, out_tree_def = flatten_fun_nokwargs(lap_subtrace(f, self.main), in_tree_def)
-        update_params = call_param_updaters.get(call_primitive)
-        new_params = (update_params(params, len(primals_jacs_laps))
-                      if update_params else params)
-        result = call_primitive.bind(f_lap, *primals_jacs_laps, **new_params)
-        primals_out, jacs_out, laps_out = tree_unflatten(out_tree_def(), result)
-        return [LapTracer(self, p, j, l)
-                for p, j, l in zip(primals_out, jacs_out, laps_out)]
-
-    def post_process_call(self, call_primitive, out_tracers, params):
-        primals, jacs, laps = unzip3((t.primal, t.jacobian, t.laplacian)
-                                     for t in out_tracers)
-        out, treedef = tree_flatten((primals, jacs, laps))
-        del primals, jacs, laps
-        main = self.main
-        def todo(x):
-            primals, jacs, laps = tree_unflatten(treedef, x)
-            trace = LapTrace(main, core.cur_sublevel())
-            return smap(partial(LapTracer, trace), primals, jacs, laps)
-        return out, todo
-
     def process_custom_jvp_call(self, primitive, fun, jvp, tracers, *,
                                 symbolic_zeros):
+        if symbolic_zeros:
+            raise NotImplementedError("symbolic_zeros not implemented")
         if all(type(t.jacobian) is type(t.laplacian) is Zero for t in tracers):
             return fun.call_wrapped(*(t.primal for t in tracers))
         primals_in, jacs_in, laps_in = unzip3((t.primal, t.jacobian, t.laplacian)
                                               for t in tracers)
+        jsize = get_jsize(jacs_in)
         primals_in = smap(core.full_lower, primals_in)
-        jacs_in = smap(ad.instantiate_zeros, jacs_in)
+        jacs_in = [j if type(j) is not Zero
+                   else ad.zeros_like_jaxval(p)[None].repeat(jsize, 0)
+                   for p, j in zip(primals_in, jacs_in)]
         laps_in = smap(ad.instantiate_zeros, laps_in)
+        laps_in = smap(ad.replace_float0s, primals_in, laps_in)
         in_avals = smap(shaped_abstractify, (*primals_in, *laps_in))
         jaxpr, _, consts = pe.trace_to_jaxpr_final(jvp, in_avals)
         def _jvp(p_in, t_in):
@@ -326,7 +307,7 @@ def vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in):
     multi_out = not treedef_is_leaf(tree_structure(o0))
     # jacobian and first term in laplacian, handle all empty case
     if all(type(j) is Zero for j in z1):
-        o1 = jax.tree_map(zero_tangent_from_primal, o0)
+        o1 = jax.tree_util.tree_map(zero_tangent_from_primal, o0)
         return o0, o1, o2_2
     o1, o2_1 = jax.vmap(vhv, in_axes=0, out_axes=0)(z1)
     _sum0 = lambda x: x.sum(0) if type(x) is not Zero else x
@@ -401,7 +382,7 @@ def multivar_prop(prim, primals_in, jacs_in, laps_in, **params):
     if all(type(j) is Zero for j in jacs_in):
         o1 = zero_tangent_from_primal(o0)
         return o0, o1, o2_2
-    o1 = jax.vmap(lambda v: my_jvp(pprim, z0, v), 0, 0)(z1)[1]
+    o1 = jax.vmap(lambda v: my_jvp(pprim, z0, v)[1], 0, 0)(z1)
     _mul2 = lambda x: 2*x if type(x) is not Zero else x
     _sum0 = lambda x: x.sum(0) if type(x) is not Zero else x
     def vhv(v1, v2):
@@ -473,9 +454,7 @@ def f_lap_traceable(nonzeros1, nonzeros2, *primals_nzjacs_nzlaps):
            (out_nonzeros1, out_nonzeros2))
 
 
-def _pjit_lap_rule(primals_in, jacs_in, laps_in,
-              jaxpr, in_shardings, out_shardings,
-              resource_env, donated_invars, name, keep_unused, inline):
+def _pjit_lap_rule(primals_in, jacs_in, laps_in, *, jaxpr, **params):
     jsize, = set(map(lambda x: x.shape[0], tree_flatten(jacs_in)[0]))
     is_nz_jacs_in = [type(t) is not Zero for t in jacs_in]
     is_nz_laps_in = [type(t) is not Zero for t in laps_in]
@@ -489,17 +468,26 @@ def _pjit_lap_rule(primals_in, jacs_in, laps_in,
     _fz_jacs_out = partial(_filter_zeros, is_nz_jacs_out)
     _fz_laps_out = partial(_filter_zeros, is_nz_laps_out)
 
-    insd, outsd, dovar = in_shardings, out_shardings, donated_invars
+    insd, outsd = params["in_shardings"], params["out_shardings"]
+    dovar = params["donated_invars"]
+    new_params = {
+        **params,
+        "jaxpr": jaxpr_lap,
+        "in_shardings": (*insd, *_fz_jacs_in(insd), *_fz_laps_in(insd)),
+        "out_shardings": (*outsd, *_fz_jacs_out(outsd), *_fz_laps_out(outsd)),
+        "donated_invars": (*dovar, *_fz_jacs_in(dovar), *_fz_laps_in(dovar)),
+    }
+    if "in_layouts" in params:
+        inlo, outlo = params["in_layouts"], params["out_layouts"]
+        new_params["in_layouts"] = (*inlo, *_fz_jacs_in(inlo), *_fz_laps_in(inlo))
+        new_params["out_layouts"] = (*outlo, *_fz_jacs_out(outlo), *_fz_laps_out(outlo))
+
     outputs = pjit_p.bind(
-        *primals_in, *_fz_jacs_in(jacs_in), *_fz_laps_in(laps_in),
-        jaxpr=jaxpr_lap,
-        in_shardings=(*insd, *_fz_jacs_in(insd), *_fz_laps_in(insd)),
-        out_shardings=(*outsd, *_fz_jacs_out(outsd), *_fz_laps_out(outsd)),
-        resource_env=resource_env,
-        donated_invars=(*dovar, *_fz_jacs_in(dovar), *_fz_laps_in(dovar)),
-        name=name,
-        keep_unused=keep_unused,
-        inline=inline)
+        *primals_in,
+        *_fz_jacs_in(jacs_in),
+        *_fz_laps_in(laps_in),
+        **new_params
+    )
 
     primals_out, nzjacs_nzlaps = split_list(outputs, [len(jaxpr.jaxpr.outvars)])
     assert len(primals_out) == len(jaxpr.jaxpr.outvars)
