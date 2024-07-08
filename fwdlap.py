@@ -21,7 +21,7 @@ from functools import partial
 import jax
 from jax import lax
 import jax.numpy as jnp
-from jax.tree_util import (tree_structure, treedef_is_leaf,
+from jax.tree_util import (tree_map, tree_structure, treedef_is_leaf,
                            tree_flatten, tree_unflatten, Partial)
 
 from jax import core
@@ -307,7 +307,7 @@ def vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in):
     multi_out = not treedef_is_leaf(tree_structure(o0))
     # jacobian and first term in laplacian, handle all empty case
     if all(type(j) is Zero for j in z1):
-        o1 = jax.tree_util.tree_map(zero_tangent_from_primal, o0)
+        o1 = tree_map(zero_tangent_from_primal, o0)
         return o0, o1, o2_2
     o1, o2_1 = jax.vmap(vhv, in_axes=0, out_axes=0)(z1)
     _sum0 = lambda x: x.sum(0) if type(x) is not Zero else x
@@ -322,16 +322,16 @@ def vhv_by_jvp2(f_jvp, primals_in, jacs_in, laps_in, inner_jvp=None):
     z0, z1, z2 = primals_in, jacs_in, laps_in
     if all(type(j) is Zero for j in z1):
         o0, o2_2 = f_jvp(z0, z2)
-        o1 = jax.tree_map(zero_tangent_from_primal, o0)
+        o1 = tree_map(zero_tangent_from_primal, o0)
         return o0, o1, o2_2
     def vhv(v):
         inner = lambda *a: inner_jvp(a, v)[1]
         return my_jvp(inner, z0, v)[1]
     jsize = get_jsize(z1)
-    cz_1_2 = jax.tree_map(lambda x, y: jnp.concatenate((x, y[None]), axis=0), z1, z2)
+    cz_1_2 = tree_map(lambda x, y: jnp.concatenate((x, y[None]), axis=0), z1, z2)
     o0, co_1_22 = jax.vmap(f_jvp, in_axes=(None, 0), out_axes=(None, 0))(z0, cz_1_2)
-    o1 = jax.tree_map(lambda x: x[:jsize], co_1_22)
-    o2_2 = jax.tree_map(lambda x: x[jsize], co_1_22)
+    o1 = tree_map(lambda x: x[:jsize], co_1_22)
+    o2_2 = tree_map(lambda x: x[jsize], co_1_22)
     o2_1 = jax.vmap(vhv, in_axes=0, out_axes=0)(z1)
     _sum0 = lambda x: x.sum(0) if type(x) is not Zero else x
     _add_o2 = lambda a, b: ad.add_tangents(_sum0(a), b)
@@ -350,20 +350,22 @@ _cat_primtives = set([
     # lax.pow_p, lax.div_p, lax.rem_p,
 ])
 
+def can_concat(jacs_in, laps_in):
+    try:
+        jax.eval_shape(
+            lambda a, b: tree_map(
+                lambda x, y: jnp.concatenate((x, y[None]), axis=0), a, b),
+            jacs_in, laps_in)
+        return True
+    except TypeError:
+        return False
+
 
 def primitive_by_jvp(primitive, primals_in, jacs_in, laps_in, **params):
     func = partial(primitive.bind, **params)
     f_jvp = partial(my_jvp, func)
-    try:
-        jax.eval_shape(
-            lambda a, b: jax.tree_map(
-                lambda x, y: jnp.concatenate((x, y[None]), axis=0), a, b),
-            jacs_in, laps_in)
-        can_concat = True
-    except TypeError:
-        can_concat = False
-    can_concat = can_concat and primitive in _cat_primtives
-    vhv_fn = vhv_by_jvp2 if can_concat else vhv_by_jvp
+    _concat = can_concat(jacs_in, laps_in) and primitive in _cat_primtives
+    vhv_fn = vhv_by_jvp2 if _concat else vhv_by_jvp
     return vhv_fn(f_jvp, primals_in, jacs_in, laps_in)
 
 
@@ -372,19 +374,27 @@ def primitive_by_jvp(primitive, primals_in, jacs_in, laps_in, **params):
 lap_rules: dict[core.Primitive, Callable[..., Any]] = {}
 
 
-def defmultivar(prim):
-    lap_rules[prim] = partial(multivar_prop, prim)
+def defmultivar(prim, concat=False):
+    lap_rules[prim] = partial(multivar_prop, prim, concat)
 
-def multivar_prop(prim, primals_in, jacs_in, laps_in, **params):
+def multivar_prop(prim, concat, primals_in, jacs_in, laps_in, **params):
     pprim = partial(prim.bind, **params)
     z0, z1, z2 = primals_in, jacs_in, laps_in
-    o0, o2_2 = my_jvp(pprim, z0, z2)
+    # short cut
     if all(type(j) is Zero for j in jacs_in):
+        o0, o2_2 = my_jvp(pprim, z0, z2)
         o1 = zero_tangent_from_primal(o0)
         return o0, o1, o2_2
-    o1 = jax.vmap(lambda v: my_jvp(pprim, z0, v)[1], 0, 0)(z1)
-    _mul2 = lambda x: 2*x if type(x) is not Zero else x
-    _sum0 = lambda x: x.sum(0) if type(x) is not Zero else x
+    # o0, o1 and o2_2
+    if concat and can_concat(z1, z2):
+        cz_1_2 = tree_map(lambda x, y: jnp.concatenate((x, y[None]), axis=0), z1, z2)
+        o0, co_1_22 = jax.vmap(lambda v: my_jvp(pprim, z0, v), 0, (None, 0))(cz_1_2)
+        o1 = tree_map(lambda x: x[:-1], co_1_22)
+        o2_2 = tree_map(lambda x: x[-1], co_1_22)
+    else:
+        o0, o2_2 = my_jvp(pprim, z0, z2)
+        o1 = jax.vmap(lambda v: my_jvp(pprim, z0, v)[1], 0, 0)(z1)
+    # o2_1
     def vhv(v1, v2):
         inner = lambda *a: my_jvp(pprim, a, v1)[1]
         return my_jvp(inner, z0, v2)[1]
@@ -392,6 +402,8 @@ def multivar_prop(prim, primals_in, jacs_in, laps_in, **params):
         if not tree_flatten((v1, v2))[0]: # empty tree
             return zero_tangent_from_primal(o0)
         return jax.vmap(vhv, in_axes=0, out_axes=0)(v1, v2)
+    _mul2 = lambda x: 2*x if type(x) is not Zero else x
+    _sum0 = lambda x: x.sum(0) if type(x) is not Zero else x
     o2 = o2_2
     for i in range(len(primals_in)):
         triu_z1 = [zero_tangent_from_primal(p) if j <= i else t
