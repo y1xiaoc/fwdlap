@@ -374,21 +374,65 @@ def primitive_by_jvp(primitive, primals_in, jacs_in, laps_in, **params):
 lap_rules: dict[core.Primitive, Callable[..., Any]] = {}
 
 
-def multiply_prop(primals_in, jacs_in, laps_in, **params):
-    mul = partial(lax.mul_p.bind, **params)
-    o0, o2_2 = my_jvp(mul, primals_in, laps_in)
-    if all(type(j) is Zero for j in jacs_in):
+def defscalar(prim):
+    lap_rules[prim] = partial(scalar_prop, prim)
+
+def scalar_prop(prim, primals_in, jacs_in, laps_in, **params):
+    assert not prim.multiple_results
+    pprim = partial(prim.bind, **params)
+    [z0], [z1], [z2] = primals_in, jacs_in, laps_in
+    oinfo = jax.eval_shape(pprim, *primals_in)
+    has_cplx = jnp.iscomplexobj(z0) or jnp.iscomplexobj(oinfo)
+    if z0.shape != oinfo.shape or has_cplx:
+        return primitive_by_jvp(prim, primals_in, jacs_in, laps_in, **params)
+    if type(z1) is Zero:
+        o0, o2_2 = my_jvp(pprim, z0, z2)
         o1 = zero_tangent_from_primal(o0)
         return o0, o1, o2_2
-    o1 = jax.vmap(lambda z: my_jvp(mul, primals_in, z)[1], 0, 0)(jacs_in)
-    if any(type(j) is Zero for j in jacs_in):
-        return o0, o1, o2_2
-    ja, jb = jacs_in
-    o2_1 = 2 * jax.vmap(mul)(ja, jb).sum(0)
-    o2 = ad.add_tangents(o2_1, o2_2)
+    val_grad_fn = jax.value_and_grad(pprim)
+    hess_fn = jax.hessian(pprim)
+    for _ in range(z0.ndim):
+        val_grad_fn = jax.vmap(val_grad_fn, 0, 0)
+        hess_fn = jax.vmap(hess_fn, 0, 0)
+    o0, grad = val_grad_fn(z0)
+    hess = hess_fn(z0)
+    o1 = grad * z1
+    o2 = hess * (z1 * z1).sum(0)
+    if type(z2) is not Zero:
+        o2 += grad * z2
     return o0, o1, o2
 
-# lap_rules[lax.mul_p] = multiply_prop
+defscalar(lax.exp_p)
+defscalar(lax.exp2_p)
+defscalar(lax.expm1_p)
+defscalar(lax.log_p)
+defscalar(lax.log1p_p)
+defscalar(lax.logistic_p)
+defscalar(lax.sin_p)
+defscalar(lax.cos_p)
+defscalar(lax.tan_p)
+defscalar(lax.asin_p)
+defscalar(lax.acos_p)
+defscalar(lax.atan_p)
+defscalar(lax.sinh_p)
+defscalar(lax.cosh_p)
+defscalar(lax.tanh_p)
+defscalar(lax.asinh_p)
+defscalar(lax.acosh_p)
+defscalar(lax.atanh_p)
+defscalar(lax.sqrt_p)
+defscalar(lax.rsqrt_p)
+defscalar(lax.cbrt_p)
+defscalar(lax.lgamma_p)
+defscalar(lax.digamma_p)
+defscalar(lax.polygamma_p)
+defscalar(lax.igamma_p)
+defscalar(lax.igammac_p)
+defscalar(lax.bessel_i0e_p)
+defscalar(lax.bessel_i1e_p)
+defscalar(lax.erf_p)
+defscalar(lax.erfc_p)
+defscalar(lax.erf_inv_p)
 
 
 def defelemwise(prim, holomorphic=False):

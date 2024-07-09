@@ -23,7 +23,7 @@ import jax
 import jax.numpy as jnp
 from jax.example_libraries import stax
 from jax.example_libraries.stax import (
-    Conv, Dense, MaxPool, Relu, Flatten, Softplus)
+    Conv, Dense, MaxPool, Relu, Tanh, Flatten, Softplus)
 
 import fwdlap
 
@@ -34,7 +34,7 @@ def get_network():
         Conv(32, (3, 3), padding='SAME'), Relu,
         Conv(64, (3, 3), padding='SAME'), Relu,
         MaxPool((2, 2)), Flatten,
-        Dense(128), Relu,
+        Dense(128), Tanh,
         Dense(10), Softplus,
     )
     # Initialize parameters, no batch shape
