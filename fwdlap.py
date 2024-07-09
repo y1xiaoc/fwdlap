@@ -374,6 +374,98 @@ def primitive_by_jvp(primitive, primals_in, jacs_in, laps_in, **params):
 lap_rules: dict[core.Primitive, Callable[..., Any]] = {}
 
 
+def multiply_prop(primals_in, jacs_in, laps_in, **params):
+    mul = partial(lax.mul_p.bind, **params)
+    o0, o2_2 = my_jvp(mul, primals_in, laps_in)
+    if all(type(j) is Zero for j in jacs_in):
+        o1 = zero_tangent_from_primal(o0)
+        return o0, o1, o2_2
+    o1 = jax.vmap(lambda z: my_jvp(mul, primals_in, z)[1], 0, 0)(jacs_in)
+    if any(type(j) is Zero for j in jacs_in):
+        return o0, o1, o2_2
+    ja, jb = jacs_in
+    o2_1 = 2 * jax.vmap(mul)(ja, jb).sum(0)
+    o2 = ad.add_tangents(o2_1, o2_2)
+    return o0, o1, o2
+
+# lap_rules[lax.mul_p] = multiply_prop
+
+
+def defelemwise(prim, holomorphic=False):
+    lap_rules[prim] = partial(elemwise_prop, prim, holomorphic)
+
+def elemwise_prop(prim, holomorphic, primals_in, jacs_in, laps_in, **params):
+    assert not prim.multiple_results
+    pprim = partial(prim.bind, **params)
+    z0, z1, z2 = primals_in, jacs_in, laps_in
+    # check shape and dtype
+    oinfo = jax.eval_shape(pprim, *primals_in)
+    cplx_out = jnp.iscomplexobj(oinfo)
+    has_cplx = any(jnp.iscomplexobj(z) for z in z0) or cplx_out
+    if (any(z.shape != oinfo.shape for z in z0) or (has_cplx and not holomorphic)):
+        return primitive_by_jvp(prim, primals_in, jacs_in, laps_in, **params)
+    # calculations start
+    o0, o2_2 = my_jvp(pprim, z0, z2)
+    if all(type(j) is Zero for j in jacs_in):
+        o0, o2_2 = my_jvp(pprim, z0, z2)
+        o1 = zero_tangent_from_primal(o0)
+        return o0, o1, o2_2
+    # now jacs are not all zero
+    o1 = jax.vmap(lambda z: my_jvp(pprim, z0, z)[1], 0, 0)(z1)
+    nonzero_idx = [i for i, jac in enumerate(z1) if type(jac) is not Zero]
+    hess_fn = jax.hessian(pprim, argnums=nonzero_idx, holomorphic=cplx_out)
+    for _ in range(o0.ndim):
+        hess_fn = jax.vmap(hess_fn, in_axes=0)
+    if cplx_out:
+        z0 = smap(lambda z: z.astype(o0.dtype), z0)
+    hess_mat = hess_fn(*z0)
+    o2 = o2_2
+    for i, nzi in enumerate(nonzero_idx):
+        for j, nzj in enumerate(nonzero_idx[i:], i):
+            hess = hess_mat[i][j]
+            if i != j:
+                hess *= 2
+            o2 = ad.add_tangents(o2, hess * (z1[nzi] * z1[nzj]).sum(0))
+    return o0, o1, o2
+
+# currently do not enable any rules as benchmark results are unclear
+# defelemwise(lax.exp_p)
+# defelemwise(lax.exp2_p)
+# defelemwise(lax.expm1_p)
+# defelemwise(lax.log_p)
+# defelemwise(lax.log1p_p)
+# defelemwise(lax.logistic_p)
+# defelemwise(lax.sin_p)
+# defelemwise(lax.cos_p)
+# defelemwise(lax.tan_p)
+# defelemwise(lax.asin_p)
+# defelemwise(lax.acos_p)
+# defelemwise(lax.atan_p)
+# defelemwise(lax.atan2_p)
+# defelemwise(lax.sinh_p)
+# defelemwise(lax.cosh_p)
+# defelemwise(lax.tanh_p)
+# defelemwise(lax.asinh_p)
+# defelemwise(lax.acosh_p)
+# defelemwise(lax.atanh_p)
+# defelemwise(lax.sqrt_p)
+# defelemwise(lax.rsqrt_p)
+# defelemwise(lax.cbrt_p)
+# defelemwise(lax.pow_p)
+# defelemwise(lax.integer_pow_p)
+# defelemwise(lax.div_p)
+# defelemwise(lax.lgamma_p)
+# defelemwise(lax.digamma_p)
+# defelemwise(lax.polygamma_p)
+# defelemwise(lax.igamma_p)
+# defelemwise(lax.igammac_p)
+# defelemwise(lax.bessel_i0e_p)
+# defelemwise(lax.bessel_i1e_p)
+# defelemwise(lax.erf_p)
+# defelemwise(lax.erfc_p)
+# defelemwise(lax.erf_inv_p)
+
+
 def defmultivar(prim, concat=False):
     lap_rules[prim] = partial(multivar_prop, prim, concat)
 
