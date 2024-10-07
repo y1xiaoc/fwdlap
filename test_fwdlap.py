@@ -60,7 +60,7 @@ def common_data():
 def test_lap(common_data, symbolic_zero):
     net_fn, x, jac_target, lap_target = common_data
     eye = jnp.eye(x.size).reshape(x.size, *x.shape)
-    zero = (fwdlap.Zero.from_value(x)
+    zero = (fwdlap.zero_tangent_from_primal(x)
             if symbolic_zero else jnp.zeros_like(x))
     out, jac, lap = fwdlap.lap(net_fn, (x,), (eye,), (zero,))
     jac = jnp.moveaxis(jac, -1, 0).reshape(*out.shape, *x.shape)
@@ -73,7 +73,7 @@ def test_lap(common_data, symbolic_zero):
 def test_lap_partial(common_data, symbolic_zero):
     net_fn, x, jac_target, lap_target = common_data
     eye = jnp.eye(x.size).reshape(x.size, *x.shape)
-    zero = (fwdlap.Zero.from_value(x)
+    zero = (fwdlap.zero_tangent_from_primal(x)
             if symbolic_zero else jnp.zeros_like(x))
     out, lap_pe = fwdlap.lap_partial(net_fn, (x,), (eye,), (zero,))
     jac, lap = lap_pe((eye,), (zero,))
