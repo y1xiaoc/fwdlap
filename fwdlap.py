@@ -256,13 +256,11 @@ class LapTrace(core.Trace):
                    else ad.zeros_like_jaxval(p)[None].repeat(jsize, 0)
                    for p, j in zip(primals_in, jacs_in)]
         laps_in = smap(ad.instantiate_zeros, laps_in)
-        laps_in = smap(ad.replace_float0s, primals_in, laps_in)
         in_avals = smap(shaped_abstractify, (*primals_in, *laps_in))
         jaxpr, _, consts = pe.trace_to_jaxpr_final(jvp, in_avals)
         def _jvp(p_in, t_in):
             outs = core.eval_jaxpr(jaxpr, consts, *p_in, *t_in)
             p_out, t_out = split_list(outs, [len(outs) // 2])
-            t_out = smap(ad.recast_to_float0, p_out, t_out)
             return p_out, t_out
         primals_out, jacs_out, laps_out = vhv_by_jvp(
             _jvp, primals_in, jacs_in, laps_in)
@@ -278,7 +276,14 @@ call_param_updaters: dict[core.Primitive, Callable[..., Any]] = {}
 
 
 def zero_tangent_from_primal(primal):
-    return Zero(core.get_aval(primal).at_least_vspace())
+    # compatible with different jax version
+    if hasattr(Zero, "from_primal_value"):
+        return Zero.from_primal_value(primal)
+    aval = core.get_aval(primal)
+    if hasattr(aval, "to_tangent_aval"):
+        return Zero(aval.to_tangent_aval())
+    else:
+        return Zero(aval.at_least_vspace())
 
 
 @lu.transformation_with_aux
@@ -396,9 +401,9 @@ def f_lap_traceable(nonzeros1, nonzeros2, *primals_nzjacs_nzlaps):
     num_primals = len(nonzeros1)
     primals = list(primals_nzjacs_nzlaps[:num_primals])
     nzjacs_nzlaps = iter(primals_nzjacs_nzlaps[num_primals:])
-    jacs = [next(nzjacs_nzlaps) if nz else Zero.from_value(p)
+    jacs = [next(nzjacs_nzlaps) if nz else zero_tangent_from_primal(p)
             for p, nz in zip(primals, nonzeros1)]
-    laps = [next(nzjacs_nzlaps) if nz else Zero.from_value(p)
+    laps = [next(nzjacs_nzlaps) if nz else zero_tangent_from_primal(p)
             for p, nz in zip(primals, nonzeros2)]
     primals_out, jacs_out, laps_out = yield (primals, jacs, laps), {}
     out_nonzeros1 = [type(t) is not Zero for t in jacs_out]

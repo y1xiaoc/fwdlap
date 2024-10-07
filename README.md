@@ -66,7 +66,7 @@ def calc_ke_fwdlap(log_psi, x, inner_size=None, batch_size=None):
         ncoord = flat_x.size
         f = lambda flat_x: log_psi(flat_x.reshape(x_shape)) # take flattened x
         eye = jnp.eye(ncoord, dtype=x.dtype)
-        zero = fwdlap.Zero.from_value(flat_x)
+        zero = fwdlap.zero_tangent_from_primal(flat_x)
         if inner_size is None:
             primals, grads, laps = fwdlap.lap(f, (flat_x,), (eye,), (zero,))
             laplacian = (grads**2).sum() + laps
