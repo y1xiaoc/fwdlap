@@ -256,11 +256,13 @@ class LapTrace(core.Trace):
                    else ad.zeros_like_jaxval(p)[None].repeat(jsize, 0)
                    for p, j in zip(primals_in, jacs_in)]
         laps_in = smap(ad.instantiate_zeros, laps_in)
+        laps_in = smap(_replace_float0s, primals_in, laps_in)
         in_avals = smap(shaped_abstractify, (*primals_in, *laps_in))
         jaxpr, _, consts = pe.trace_to_jaxpr_final(jvp, in_avals)
         def _jvp(p_in, t_in):
             outs = core.eval_jaxpr(jaxpr, consts, *p_in, *t_in)
             p_out, t_out = split_list(outs, [len(outs) // 2])
+            t_out = smap(_recast_to_float0, p_out, t_out)
             return p_out, t_out
         primals_out, jacs_out, laps_out = vhv_by_jvp(
             _jvp, primals_in, jacs_in, laps_in)
@@ -284,6 +286,20 @@ def zero_tangent_from_primal(primal):
         return Zero(aval.to_tangent_aval())
     else:
         return Zero(aval.at_least_vspace())
+
+
+def _replace_float0s(primal, tangent):
+    # compatible with different jax version
+    if hasattr(ad, "replace_float0s"):
+        return ad.replace_float0s(primal, tangent)
+    return tangent
+
+
+def _recast_to_float0(primal, tangent):
+    # compatible with different jax version
+    if hasattr(ad, "recast_to_float0"):
+        return ad.recast_to_float0(primal, tangent)
+    return tangent
 
 
 @lu.transformation_with_aux
