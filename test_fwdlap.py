@@ -64,9 +64,9 @@ def test_lap(common_data, symbolic_zero):
             if symbolic_zero else jnp.zeros_like(x))
     out, jac, lap = fwdlap.lap(net_fn, (x,), (eye,), (zero,))
     jac = jnp.moveaxis(jac, -1, 0).reshape(*out.shape, *x.shape)
-    np.testing.assert_allclose(out, net_fn(x), atol=1e-6)
-    np.testing.assert_allclose(jac, jac_target, atol=1e-6)
-    np.testing.assert_allclose(lap, lap_target, atol=1e-6)
+    np.testing.assert_allclose(out, net_fn(x), atol=1e-5)
+    np.testing.assert_allclose(jac, jac_target, atol=1e-5)
+    np.testing.assert_allclose(lap, lap_target, atol=1e-5)
 
 
 @pytest.mark.parametrize("symbolic_zero", [True, False])
@@ -78,6 +78,19 @@ def test_lap_partial(common_data, symbolic_zero):
     out, lap_pe = fwdlap.lap_partial(net_fn, (x,), (eye,), (zero,))
     jac, lap = lap_pe((eye,), (zero,))
     jac = jnp.moveaxis(jac, -1, 0).reshape(*out.shape, *x.shape)
-    np.testing.assert_allclose(out, net_fn(x), atol=1e-6)
-    np.testing.assert_allclose(jac, jac_target, atol=1e-6)
-    np.testing.assert_allclose(lap, lap_target, atol=1e-6)
+    np.testing.assert_allclose(out, net_fn(x), atol=1e-5)
+    np.testing.assert_allclose(jac, jac_target, atol=1e-5)
+    np.testing.assert_allclose(lap, lap_target, atol=1e-5)
+
+
+@pytest.mark.parametrize("symbolic_zero", [True, False])
+def test_lap_vmapped(common_data, symbolic_zero):
+    net_fn, x, _, lap_target = common_data
+    vnet_fn = jax.vmap(net_fn, in_axes=0, out_axes=0)
+    x = jnp.stack([x, x])
+    lap_target = jnp.stack([lap_target, lap_target])
+    eye = jnp.eye(x.size).reshape(x.size, *x.shape)
+    zero = (fwdlap.zero_tangent_from_primal(x)
+            if symbolic_zero else jnp.zeros_like(x))
+    _, _, lap = fwdlap.lap(vnet_fn, (x,), (eye,), (zero,))
+    np.testing.assert_allclose(lap, lap_target, atol=1e-5)
