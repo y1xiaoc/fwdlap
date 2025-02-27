@@ -25,16 +25,16 @@ from jax.tree_util import (tree_structure, treedef_is_leaf,
                            tree_flatten, tree_unflatten, Partial)
 
 from jax import core
+from jax.extend import core as ext_core
 try:
     from jax.extend import linear_util as lu
 except ImportError:
     from jax import linear_util as lu
 from jax.util import split_list, safe_map as smap
-from jax.api_util import flatten_fun_nokwargs, shaped_abstractify
+from jax.api_util import flatten_fun_nokwargs, shaped_abstractify, debug_info
 from jax.interpreters import ad
 from jax.interpreters import partial_eval as pe
 from jax.interpreters.ad import Zero
-from jax.custom_derivatives import zero_from_primal as array_zero_from_primal
 
 from jax._src.util import unzip3, weakref_lru_cache
 from jax.experimental.pjit import pjit_p
@@ -74,7 +74,8 @@ def lap(fun, primals, jacobians, laplacians):
     """
     check_no_nested(primals, jacobians, laplacians)
     jsize = get_jsize(jacobians)
-    f, out_tree = flatten_fun_output(lu.wrap_init(fun))
+    f, out_tree = flatten_fun_output(
+        lu.wrap_init(fun, debug_info=debug_info("lap", fun, primals, {})))
     out_primals, out_jacs, out_laps = lap_fun(
         lap_subtrace(f), jsize, True).call_wrapped(
         primals, jacobians, laplacians)
@@ -117,7 +118,8 @@ def lap_partial(fun, primals, example_jacs, example_laps):
     # make the lap tracer with wrapped (flattened) function
     check_no_nested(primals, example_jacs, example_laps)
     jsize = get_jsize(example_jacs)
-    f, f_out_tree = flatten_fun_output(lu.wrap_init(fun))
+    f, f_out_tree = flatten_fun_output(
+        lu.wrap_init(fun, debug_info=debug_info("lap_partial", fun, primals, {})))
     f_lap = lap_fun(lap_subtrace(f), jsize, True)
     # partial eval, including pre and post process
     in_pvals = (tuple(pe.PartialVal.known(p) for p in primals)
@@ -226,15 +228,16 @@ class LapTrace(core.Trace):
                     zero_tangent_from_primal(val))
 
     def process_primitive(self, primitive, tracers, params):
+        jsize = self.jsize
         primals_in, jacs_in, laps_in = unzip3(smap(self.to_pjl_tuple, tracers))
         with core.set_current_trace(self.parent_trace):
             if primitive in lap_rules:
                 rule = lap_rules[primitive]
                 primal_out, jac_out, lap_out = rule(
-                    primals_in, jacs_in, laps_in, **params)
+                    jsize, primals_in, jacs_in, laps_in, **params)
             else:
                 primal_out, jac_out, lap_out = primitive_by_jvp(
-                    primitive, primals_in, jacs_in, laps_in, **params)
+                    primitive, jsize, primals_in, jacs_in, laps_in, **params)
         if not primitive.multiple_results:
             return LapTracer(self, primal_out, jac_out, lap_out)
         else:
@@ -259,7 +262,7 @@ class LapTrace(core.Trace):
                 p_out, t_out = split_list(outs, [len(outs) // 2])
                 return p_out, t_out
             primals_out, jacs_out, laps_out = vhv_by_jvp(
-                _jvp, primals_in, jacs_in, laps_in)
+                _jvp, self.jsize, primals_in, jacs_in, laps_in)
         return [LapTracer(self, p, j, l)
                 for p, j, l in zip(primals_out, jacs_out, laps_out)]
 
@@ -268,13 +271,15 @@ class LapTrace(core.Trace):
                         "function.")
 
 
-call_param_updaters: dict[core.Primitive, Callable[..., Any]] = {}
+call_param_updaters: dict[ext_core.Primitive, Callable[..., Any]] = {}
 
 
 def zero_tangent_from_primal(primal, jsize=None):
+    zero = Zero.from_primal_value(primal)
     if jsize is None:
-        return Zero.from_primal_value(primal)
-    return Zero.from_primal_value(primal[None].repeat(jsize, 0))
+        return zero
+    aval = zero.aval
+    return Zero(aval.update(shape=(jsize, *aval.shape)))
 
 
 @lu.transformation_with_aux
@@ -285,7 +290,8 @@ def flatten_fun_output(*args):
 
 def my_jvp(fun, primals, tangents):
     # this jvp is transparant to Zero, and assumes flattened input
-    f, out_tree = flatten_fun_output(lu.wrap_init(fun))
+    f, out_tree = flatten_fun_output(
+        lu.wrap_init(fun, debug_info=debug_info("lap_innerjvp", fun, primals, {})))
     jvp_f = ad.jvp(f, instantiate=False)
     out_primals, out_tangents = jvp_f.call_wrapped(primals, tangents)
     out_tree = out_tree()
@@ -293,7 +299,7 @@ def my_jvp(fun, primals, tangents):
             tree_unflatten(out_tree, out_tangents))
 
 
-def vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in):
+def vhv_by_jvp(f_jvp, jsize, primals_in, jacs_in, laps_in):
     z0, z1, z2 = primals_in, jacs_in, laps_in
     def vhv(v):
         inner = lambda *a: f_jvp(a, v)[1]
@@ -303,7 +309,8 @@ def vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in):
     multi_out = not treedef_is_leaf(tree_structure(o0))
     # jacobian and first term in laplacian, handle all empty case
     if all(type(j) is Zero for j in z1):
-        o1 = jax.tree_util.tree_map(zero_tangent_from_primal, o0)
+        zero_o1_fn = partial(zero_tangent_from_primal, jsize=jsize)
+        o1 = jax.tree_util.tree_map(zero_o1_fn, o0)
         return o0, o1, o2_2
     o1, o2_1 = jax.vmap(vhv, in_axes=0, out_axes=0)(z1)
     _sum0 = lambda x: x.sum(0) if type(x) is not Zero else x
@@ -312,26 +319,26 @@ def vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in):
     return o0, o1, o2
 
 
-def primitive_by_jvp(primitive, primals_in, jacs_in, laps_in, **params):
+def primitive_by_jvp(primitive, jsize, primals_in, jacs_in, laps_in, **params):
     func = partial(primitive.bind, **params)
     f_jvp = partial(my_jvp, func)
-    return vhv_by_jvp(f_jvp, primals_in, jacs_in, laps_in)
+    return vhv_by_jvp(f_jvp, jsize, primals_in, jacs_in, laps_in)
 
 
 ### rule definitions
 
-lap_rules: dict[core.Primitive, Callable[..., Any]] = {}
+lap_rules: dict[ext_core.Primitive, Callable[..., Any]] = {}
 
 
 def defmultivar(prim):
     lap_rules[prim] = partial(multivar_prop, prim)
 
-def multivar_prop(prim, primals_in, jacs_in, laps_in, **params):
+def multivar_prop(prim, jsize, primals_in, jacs_in, laps_in, **params):
     pprim = partial(prim.bind, **params)
     z0, z1, z2 = primals_in, jacs_in, laps_in
     o0, o2_2 = my_jvp(pprim, z0, z2)
     if all(type(j) is Zero for j in jacs_in):
-        o1 = zero_tangent_from_primal(o0)
+        o1 = zero_tangent_from_primal(o0, jsize)
         return o0, o1, o2_2
     o1 = jax.vmap(lambda v: my_jvp(pprim, z0, v)[1], 0, 0)(z1)
     _mul2 = lambda x: 2*x if type(x) is not Zero else x
@@ -345,9 +352,9 @@ def multivar_prop(prim, primals_in, jacs_in, laps_in, **params):
         return jax.vmap(vhv, in_axes=0, out_axes=0)(v1, v2)
     o2 = o2_2
     for i in range(len(primals_in)):
-        triu_z1 = [zero_tangent_from_primal(p) if j <= i else t
+        triu_z1 = [zero_tangent_from_primal(p, jsize) if j <= i else t
                    for j, (p, t) in enumerate(zip(z0,z1))]
-        diag_z1 = [zero_tangent_from_primal(p) if j != i else t
+        diag_z1 = [zero_tangent_from_primal(p, jsize) if j != i else t
                    for j, (p, t) in enumerate(zip(z0,z1))]
         o2_1_diag = vmapped_vhv(diag_z1, diag_z1)
         o2 = ad.add_tangents(_sum0(o2_1_diag), o2)
@@ -376,7 +383,7 @@ def lap_jaxpr(jaxpr, jsize, nonzeros1, nonzeros2, instantiate):
 @weakref_lru_cache
 def _lap_jaxpr(jaxpr, jsize, nonzeros1, nonzeros2, instantiate):
     assert len(jaxpr.in_avals) == len(nonzeros1) == len(nonzeros2)
-    f = lu.wrap_init(core.jaxpr_as_fun(jaxpr))
+    f = lu.wrap_init(ext_core.jaxpr_as_fun(jaxpr), debug_info=jaxpr.jaxpr.debug_info)
     f_jvp, out_nonzeros = f_lap_traceable(lap_fun(lap_subtrace(f), jsize, instantiate),
                                           nonzeros1, nonzeros2)
     jac_avals = [aval.update(shape=(jsize, *aval.shape))
@@ -384,7 +391,7 @@ def _lap_jaxpr(jaxpr, jsize, nonzeros1, nonzeros2, instantiate):
     lap_avals = [aval for aval, nz in zip(jaxpr.in_avals, nonzeros2) if nz]
     avals_in = [*jaxpr.in_avals, *jac_avals, *lap_avals]
     jaxpr_out, avals_out, literals_out = pe.trace_to_jaxpr_dynamic(f_jvp, avals_in)
-    return core.ClosedJaxpr(jaxpr_out, literals_out), out_nonzeros()
+    return ext_core.ClosedJaxpr(jaxpr_out, literals_out), out_nonzeros()
 
 @lu.transformation_with_aux
 def f_lap_traceable(nonzeros1, nonzeros2, *primals_nzjacs_nzlaps):
@@ -405,8 +412,7 @@ def f_lap_traceable(nonzeros1, nonzeros2, *primals_nzjacs_nzlaps):
            (out_nonzeros1, out_nonzeros2))
 
 
-def _pjit_lap_rule(primals_in, jacs_in, laps_in, *, jaxpr, **params):
-    jsize = get_jsize(jacs_in)
+def _pjit_lap_rule(jsize, primals_in, jacs_in, laps_in, *, jaxpr, **params):
     is_nz_jacs_in = [type(t) is not Zero for t in jacs_in]
     is_nz_laps_in = [type(t) is not Zero for t in laps_in]
     jaxpr_lap, (is_nz_jacs_out, is_nz_laps_out) = lap_jaxpr(

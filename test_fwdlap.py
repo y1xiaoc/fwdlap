@@ -57,12 +57,15 @@ def common_data():
 
 
 @pytest.mark.parametrize("symbolic_zero", [True, False])
-def test_lap(common_data, symbolic_zero):
+@pytest.mark.parametrize("use_jit", [True, False])
+def test_lap(common_data, symbolic_zero, use_jit):
     net_fn, x, jac_target, lap_target = common_data
     eye = jnp.eye(x.size).reshape(x.size, *x.shape)
     zero = (fwdlap.zero_tangent_from_primal(x)
             if symbolic_zero else jnp.zeros_like(x))
-    out, jac, lap = fwdlap.lap(net_fn, (x,), (eye,), (zero,))
+    flap_fn = (jax.jit(partial(fwdlap.lap, net_fn))
+               if use_jit else partial(fwdlap.lap, net_fn))
+    out, jac, lap = flap_fn((x,), (eye,), (zero,))
     jac = jnp.moveaxis(jac, -1, 0).reshape(*out.shape, *x.shape)
     np.testing.assert_allclose(out, net_fn(x), atol=1e-5)
     np.testing.assert_allclose(jac, jac_target, atol=1e-5)
@@ -70,13 +73,15 @@ def test_lap(common_data, symbolic_zero):
 
 
 @pytest.mark.parametrize("symbolic_zero", [True, False])
-def test_lap_partial(common_data, symbolic_zero):
+@pytest.mark.parametrize("use_jit", [True, False])
+def test_lap_partial(common_data, symbolic_zero, use_jit):
     net_fn, x, jac_target, lap_target = common_data
     eye = jnp.eye(x.size).reshape(x.size, *x.shape)
     zero = (fwdlap.zero_tangent_from_primal(x)
             if symbolic_zero else jnp.zeros_like(x))
     out, lap_pe = fwdlap.lap_partial(net_fn, (x,), (eye,), (zero,))
-    jac, lap = lap_pe((eye,), (zero,))
+    lap_fn = jax.jit(lap_pe) if use_jit else lap_pe
+    jac, lap = lap_fn((eye,), (zero,))
     jac = jnp.moveaxis(jac, -1, 0).reshape(*out.shape, *x.shape)
     np.testing.assert_allclose(out, net_fn(x), atol=1e-5)
     np.testing.assert_allclose(jac, jac_target, atol=1e-5)
@@ -84,7 +89,8 @@ def test_lap_partial(common_data, symbolic_zero):
 
 
 @pytest.mark.parametrize("symbolic_zero", [True, False])
-def test_lap_vmapped(common_data, symbolic_zero):
+@pytest.mark.parametrize("use_jit", [True, False])
+def test_lap_vmapped(common_data, symbolic_zero, use_jit):
     net_fn, x, _, lap_target = common_data
     vnet_fn = jax.vmap(net_fn, in_axes=0, out_axes=0)
     x = jnp.stack([x, x])
@@ -92,5 +98,7 @@ def test_lap_vmapped(common_data, symbolic_zero):
     eye = jnp.eye(x.size).reshape(x.size, *x.shape)
     zero = (fwdlap.zero_tangent_from_primal(x)
             if symbolic_zero else jnp.zeros_like(x))
-    _, _, lap = fwdlap.lap(vnet_fn, (x,), (eye,), (zero,))
+    flap_fn = (jax.jit(partial(fwdlap.lap, vnet_fn))
+               if use_jit else partial(fwdlap.lap, vnet_fn))
+    _, _, lap = flap_fn((x,), (eye,), (zero,))
     np.testing.assert_allclose(lap, lap_target, atol=1e-5)

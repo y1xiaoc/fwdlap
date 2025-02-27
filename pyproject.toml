@@ -18,7 +18,7 @@ classifiers = [
 readme = "README.md"
 dynamic = ["version"]
 dependencies = [
-    "jax>=0.4.36",
+    "jax >= 0.4.36",
 ]
 
 [project.urls]
