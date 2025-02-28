@@ -17,6 +17,9 @@ classifiers = [
 ]
 readme = "README.md"
 dynamic = ["version"]
+dependencies = [
+    "jax >= 0.4.36",
+]
 
 [project.urls]
 Homepage = "https://github.com/y1xiaoc/fwdlap"
