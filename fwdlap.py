@@ -400,9 +400,10 @@ def scalar_prop(prim, jsize, primals_in, jacs_in, laps_in, **params):
     oinfo = jax.eval_shape(pprim, *primals_in)
     has_cplx = jnp.iscomplexobj(z0) or jnp.iscomplexobj(oinfo)
     if z0.shape != oinfo.shape or has_cplx:
-        return primitive_by_jvp(prim, primals_in, jacs_in, laps_in, **params)
+        return primitive_by_jvp(prim, jsize,
+                                primals_in, jacs_in, laps_in, **params)
     if type(z1) is Zero:
-        o0, o2_2 = my_jvp(pprim, z0, z2)
+        o0, o2_2 = my_jvp(pprim, (z0,), (z2,))
         o1 = zero_tangent_from_primal(o0, jsize)
         return o0, o1, o2_2
     val_grad_fn = jax.value_and_grad(pprim)
