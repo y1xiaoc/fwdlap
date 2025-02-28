@@ -399,7 +399,7 @@ def _lap_jaxpr(jaxpr, jsize, nonzeros1, nonzeros2, instantiate):
     assert len(jaxpr.in_avals) == len(nonzeros1) == len(nonzeros2)
     f = lu.wrap_init(ext_core.jaxpr_as_fun(jaxpr), debug_info=jaxpr.jaxpr.debug_info)
     f_jvp, out_nonzeros = f_lap_traceable(lap_fun(lap_subtrace(f), jsize, instantiate),
-                                          nonzeros1, nonzeros2)
+                                          jsize, nonzeros1, nonzeros2)
     jac_avals = [aval.update(shape=(jsize, *aval.shape))
                  for aval, nz in zip(jaxpr.in_avals, nonzeros1) if nz]
     lap_avals = [aval for aval, nz in zip(jaxpr.in_avals, nonzeros2) if nz]
@@ -408,12 +408,12 @@ def _lap_jaxpr(jaxpr, jsize, nonzeros1, nonzeros2, instantiate):
     return ext_core.ClosedJaxpr(jaxpr_out, literals_out), out_nonzeros()
 
 @lu.transformation_with_aux2
-def f_lap_traceable(f, store, nonzeros1, nonzeros2, *primals_nzjacs_nzlaps):
+def f_lap_traceable(f, store, jsize, nonzeros1, nonzeros2, *primals_nzjacs_nzlaps):
     assert len(nonzeros1) == len(nonzeros2)
     num_primals = len(nonzeros1)
     primals = list(primals_nzjacs_nzlaps[:num_primals])
     nzjacs_nzlaps = iter(primals_nzjacs_nzlaps[num_primals:])
-    jacs = [next(nzjacs_nzlaps) if nz else zero_tangent_from_primal(p)
+    jacs = [next(nzjacs_nzlaps) if nz else zero_tangent_from_primal(p, jsize)
             for p, nz in zip(primals, nonzeros1)]
     laps = [next(nzjacs_nzlaps) if nz else zero_tangent_from_primal(p)
             for p, nz in zip(primals, nonzeros2)]
