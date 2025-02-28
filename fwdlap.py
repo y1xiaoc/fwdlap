@@ -166,10 +166,10 @@ def check_no_nested(primals, jacobians, laplacians):
                 raise ValueError(f"{name} value at position {i} is not an array")
 
 
-@lu.transformation
-def lap_fun(jsize, instantiate, primals, jacobians, laplacians):
+@lu.transformation2
+def lap_fun(f, jsize, instantiate, primals, jacobians, laplacians):
     tag = core.TraceTag()
-    out_primals, out_jacs, out_laps = yield (tag, jsize, primals, jacobians, laplacians), {}
+    out_primals, out_jacs, out_laps = f(tag, jsize, primals, jacobians, laplacians)
     if type(instantiate) is bool:
         instantiate = [instantiate] * len(out_jacs)
     out_jacs = [jnp.zeros((jsize, *p.shape), p.dtype)
@@ -178,18 +178,18 @@ def lap_fun(jsize, instantiate, primals, jacobians, laplacians):
     out_laps = [jnp.zeros_like(p)
                 if type(l) is Zero and inst else l
                 for p, l, inst in zip(out_primals, out_laps, instantiate)]
-    yield out_primals, out_jacs, out_laps
+    return out_primals, out_jacs, out_laps
 
 
-@lu.transformation
-def lap_subtrace(tag, jsize, primals, jacobians, laplacians):
+@lu.transformation2
+def lap_subtrace(f, tag, jsize, primals, jacobians, laplacians):
     with core.take_current_trace() as parent_trace:
         trace = LapTrace(tag, parent_trace, jsize)
         in_tracers = smap(partial(LapTracer, trace), primals, jacobians, laplacians)
         with core.set_current_trace(trace):
-            ans = yield in_tracers, {}
+            ans = f(*in_tracers)
         out_primals, out_jacs, out_laps = unzip3(smap(trace.to_pjl_tuple, ans))
-    yield out_primals, out_jacs, out_laps
+    return out_primals, out_jacs, out_laps
 
 
 class LapTracer(core.Tracer):
@@ -282,10 +282,12 @@ def zero_tangent_from_primal(primal, jsize=None):
     return Zero(aval.update(shape=(jsize, *aval.shape)))
 
 
-@lu.transformation_with_aux
-def flatten_fun_output(*args):
-    ans = yield args, {}
-    yield tree_flatten(ans)
+@lu.transformation_with_aux2
+def flatten_fun_output(f, store, *args):
+    ans = f(*args)
+    ans, tree = tree_flatten(ans)
+    store.store(tree)
+    return ans
 
 
 def my_jvp(fun, primals, tangents):
@@ -393,8 +395,8 @@ def _lap_jaxpr(jaxpr, jsize, nonzeros1, nonzeros2, instantiate):
     jaxpr_out, avals_out, literals_out = pe.trace_to_jaxpr_dynamic(f_jvp, avals_in)
     return ext_core.ClosedJaxpr(jaxpr_out, literals_out), out_nonzeros()
 
-@lu.transformation_with_aux
-def f_lap_traceable(nonzeros1, nonzeros2, *primals_nzjacs_nzlaps):
+@lu.transformation_with_aux2
+def f_lap_traceable(f, store, nonzeros1, nonzeros2, *primals_nzjacs_nzlaps):
     assert len(nonzeros1) == len(nonzeros2)
     num_primals = len(nonzeros1)
     primals = list(primals_nzjacs_nzlaps[:num_primals])
@@ -403,13 +405,13 @@ def f_lap_traceable(nonzeros1, nonzeros2, *primals_nzjacs_nzlaps):
             for p, nz in zip(primals, nonzeros1)]
     laps = [next(nzjacs_nzlaps) if nz else zero_tangent_from_primal(p)
             for p, nz in zip(primals, nonzeros2)]
-    primals_out, jacs_out, laps_out = yield (primals, jacs, laps), {}
+    primals_out, jacs_out, laps_out = f(primals, jacs, laps)
     out_nonzeros1 = [type(t) is not Zero for t in jacs_out]
     out_nonzeros2 = [type(t) is not Zero for t in laps_out]
     nonzero_jacs_out = [t for t in jacs_out if type(t) is not Zero]
     nonzero_laps_out = [t for t in laps_out if type(t) is not Zero]
-    yield (list(primals_out) + nonzero_jacs_out + nonzero_laps_out,
-           (out_nonzeros1, out_nonzeros2))
+    store.store((out_nonzeros1, out_nonzeros2))
+    return list(primals_out) + nonzero_jacs_out + nonzero_laps_out
 
 
 def _pjit_lap_rule(jsize, primals_in, jacs_in, laps_in, *, jaxpr, **params):
