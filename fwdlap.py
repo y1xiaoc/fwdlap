@@ -30,15 +30,18 @@ try:
     from jax.extend import linear_util as lu
 except ImportError:
     from jax import linear_util as lu
-from jax.util import split_list, safe_map as smap
 from jax.api_util import flatten_fun_nokwargs, shaped_abstractify, debug_info
 from jax.interpreters import ad
 from jax.interpreters import partial_eval as pe
 from jax.interpreters.ad import Zero, instantiate_zeros
 from jax.dtypes import float0
 
-from jax._src.util import unzip3, weakref_lru_cache
-from jax.experimental.pjit import pjit_p
+from jax._src.util import split_list, unzip3, weakref_lru_cache, safe_map as smap
+
+try:
+    from jax.experimental.pjit import pjit_p as jit_p
+except ImportError:
+    jit_p = ext_core.primitives.jit_p
 
 
 def lap(fun, primals, jacobians, laplacians):
@@ -227,6 +230,7 @@ class LapTracer(core.Tracer):
 class LapTrace(core.Trace):
 
     def __init__(self, tag, parent_trace, jsize):
+        super().__init__()
         self.tag = tag
         self.parent_trace = parent_trace
         self.jsize = jsize
@@ -453,7 +457,7 @@ def _pjit_lap_rule(jsize, primals_in, jacs_in, laps_in, *, jaxpr, **params):
         new_params["in_layouts"] = (*inlo, *_fz_jacs_in(inlo), *_fz_laps_in(inlo))
         new_params["out_layouts"] = (*outlo, *_fz_jacs_out(outlo), *_fz_laps_out(outlo))
 
-    outputs = pjit_p.bind(
+    outputs = jit_p.bind(
         *primals_in,
         *_fz_jacs_in(jacs_in),
         *_fz_laps_in(laps_in),
@@ -469,4 +473,4 @@ def _pjit_lap_rule(jsize, primals_in, jacs_in, laps_in, *, jaxpr, **params):
                 for nz, aval in zip(is_nz_laps_out, jaxpr.out_avals)]
     return primals_out, jacs_out, laps_out
 
-lap_rules[pjit_p] = _pjit_lap_rule
+lap_rules[jit_p] = _pjit_lap_rule
