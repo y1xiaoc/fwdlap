@@ -39,9 +39,9 @@ from jax.dtypes import float0
 from jax._src.util import split_list, unzip3, weakref_lru_cache, safe_map as smap
 
 try:
-    from jax.experimental.pjit import pjit_p as jit_p
+    from jax.extend.core.primitives import jit_p
 except ImportError:
-    jit_p = ext_core.primitives.jit_p
+    from jax.experimental.pjit import pjit_p as jit_p
 
 
 def lap(fun, primals, jacobians, laplacians):
@@ -401,7 +401,8 @@ def lap_jaxpr(jaxpr, jsize, nonzeros1, nonzeros2, instantiate):
 @weakref_lru_cache
 def _lap_jaxpr(jaxpr, jsize, nonzeros1, nonzeros2, instantiate):
     assert len(jaxpr.in_avals) == len(nonzeros1) == len(nonzeros2)
-    f = lu.wrap_init(ext_core.jaxpr_as_fun(jaxpr), debug_info=jaxpr.jaxpr.debug_info)
+    f = lu.wrap_init(ext_core.jaxpr_as_fun(jaxpr), 
+                     debug_info=jaxpr.jaxpr.debug_info.with_unknown_names())
     f_jvp, out_nonzeros = f_lap_traceable(lap_fun(lap_subtrace(f), jsize, instantiate),
                                           jsize, nonzeros1, nonzeros2)
     jac_avals = [aval.update(shape=(jsize, *aval.shape))
